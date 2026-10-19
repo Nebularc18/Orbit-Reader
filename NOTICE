@@ -1,0 +1,8 @@
+Orbit Reader is an independent Android client for BookOrbit.
+
+BookOrbit API compatibility is based on the public contracts in:
+https://github.com/bookorbit/bookorbit
+
+This repository does not contain the BookOrbit server or web client.
+BookOrbit names and marks belong to their respective owners.
+Third-party dependencies retain their respective licenses.
