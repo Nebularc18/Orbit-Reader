@@ -164,7 +164,7 @@ class OrbitApi(val sessions: SessionStore) {
                         put(
                             "pagination",
                             buildJsonObject {
-                                put("page", page)
+                                put("page", page - 1)
                                 put("size", 30)
                             },
                         )
@@ -229,8 +229,24 @@ class OrbitApi(val sessions: SessionStore) {
             )
         )
 
-    fun download(asset: AudioAsset, expectedScope: String? = null): Response =
-        request("books/files/${asset.fileId}/download", expectedScope = expectedScope)
+    fun download(
+        asset: AudioAsset,
+        expectedScope: String? = null,
+        offset: Long = 0,
+        validator: String? = null,
+    ): Response =
+        request(
+            "books/files/${asset.fileId}/download",
+            expectedScope = expectedScope,
+            headers =
+                buildMap {
+                    put("Accept-Encoding", "identity")
+                    if (offset > 0 && validator != null) {
+                        put("Range", "bytes=$offset-")
+                        put("If-Range", validator)
+                    }
+                },
+        )
 
     fun url(path: String): String =
         "${sessions.read()?.server ?: throw ApiFailure(401)}/api/v1/$path"
@@ -240,12 +256,14 @@ class OrbitApi(val sessions: SessionStore) {
         method: String = "GET",
         body: String? = null,
         expectedScope: String? = null,
+        headers: Map<String, String> = emptyMap(),
     ): Response =
         checked(
             authenticatedClient
                 .newCall(
                     buildRequest(url(path), method, body)
                         .newBuilder()
+                        .apply { headers.forEach { (name, value) -> header(name, value) } }
                         .tag(String::class.java, expectedScope ?: sessions.read()?.scope)
                         .build()
                 )

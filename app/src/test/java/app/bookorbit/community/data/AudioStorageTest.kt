@@ -45,6 +45,31 @@ class AudioStorageTest {
     }
 
     @Test
+    fun `download management includes interrupted books and accounts for partial storage`() {
+        storage.markDownload(manifest)
+        java.io.File(storage.asset(1, asset).path + ".part").writeBytes(ByteArray(3))
+        val entry = storage.downloads(1).single()
+        assertFalse(entry.complete)
+        assertEquals(3L, entry.bytes)
+        assertEquals(3L, storage.usedBytes())
+        assertTrue(storage.downloads(2).isEmpty())
+        val other = AudioStorage(RuntimeEnvironment.getApplication(), "account-b")
+        assertTrue(other.downloads(1).isEmpty())
+        assertEquals(0L, other.usedBytes())
+        storage.deleteBook(1)
+        assertTrue(storage.downloads(1).isEmpty())
+        assertEquals(0L, storage.usedBytes())
+    }
+
+    @Test
+    fun `streaming metadata alone does not appear as a download`() {
+        storage.saveManifest(manifest)
+        assertTrue(storage.downloads(1).isEmpty())
+        storage.markDownload(manifest)
+        assertFalse(storage.downloads(1).single().complete)
+    }
+
+    @Test
     fun `another account cannot browse downloaded files or listening positions`() {
         storage.saveManifest(manifest)
         storage.asset(1, asset).writeBytes(ByteArray(8))

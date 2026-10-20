@@ -38,7 +38,7 @@ fun BookSheet(
                 )
             }
             .collectAsStateWithLifecycle(initialValue = emptyList())
-    val job = work.firstOrNull()
+    val job = work.firstOrNull { !it.state.isFinished } ?: work.firstOrNull()
     val downloading =
         job?.state in
             listOf(WorkInfo.State.RUNNING, WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED)
@@ -91,7 +91,7 @@ fun BookSheet(
             item {
                 Button(
                     onClick = onPlay,
-                    enabled = controller != null,
+                    enabled = controller != null && (!state.offline || complete),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(if (complete) "Listen offline" else "Listen now")
@@ -113,7 +113,14 @@ fun BookSheet(
                         },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Download audiobook")
+                        Text(
+                            if (job?.state == WorkInfo.State.FAILED) "Retry download"
+                            else if (
+                                state.selectedBytes > 0 || job?.state == WorkInfo.State.CANCELLED
+                            )
+                                "Resume download"
+                            else "Download audiobook"
+                        )
                     }
                 }
             if (downloading)
@@ -135,8 +142,7 @@ fun BookSheet(
                         )
                     }
                     Text(
-                        if (job?.state == WorkInfo.State.ENQUEUED)
-                            "Waiting for the selected network…"
+                        if (job?.state == WorkInfo.State.ENQUEUED) "Waiting for network or retry…"
                         else
                             "Downloading file ${job?.progress?.getInt("asset", 1)} of ${book.assets.size}",
                         Modifier.padding(top = 8.dp),
@@ -148,7 +154,7 @@ fun BookSheet(
                             )
                         }
                     ) {
-                        Text("Cancel download")
+                        Text("Pause download")
                     }
                 }
             if (job?.state == WorkInfo.State.FAILED)
@@ -158,9 +164,15 @@ fun BookSheet(
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
-            if (complete)
+            if (complete || state.selectedBytes > 0 || state.offline)
                 item {
-                    Text("Available offline", color = MaterialTheme.colorScheme.primary)
+                    Text(
+                        if (complete) "Available offline" else "Download incomplete",
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        "${Formatter.formatShortFileSize(app, state.selectedBytes)} on this device"
+                    )
                     TextButton(
                         onClick = { confirmDelete = true },
                         enabled = current?.book?.id != book.book.id,
@@ -193,7 +205,9 @@ fun BookSheet(
             onDismissRequest = { confirmDelete = false },
             title = { Text("Remove downloaded audio?") },
             text = {
-                Text("Your listening position will be kept. You can download the book again later.")
+                Text(
+                    "Only audio on this device will be removed. Your server book and listening position will be kept."
+                )
             },
             confirmButton = {
                 TextButton(

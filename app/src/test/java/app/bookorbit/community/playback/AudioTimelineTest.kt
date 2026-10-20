@@ -73,4 +73,23 @@ class AudioTimelineTest {
         assertNull(unknown.seek(25000))
         assertTrue(unknown.chapterFractions.isEmpty())
     }
+
+    @Test
+    fun `skip crosses files and chapters in both directions and clamps at book ends`() {
+        assertEquals(AudioSeek(1, 10000), timeline.skip(0, 15000, 15000, 20000))
+        assertEquals(AudioSeek(0, 10000), timeline.skip(1, 5000, -15000, 30000))
+        assertEquals(AudioSeek(0, 0), timeline.skip(0, 5000, -60000, 20000))
+        assertEquals(AudioSeek(1, 30000), timeline.skip(1, 25000, 60000, 30000))
+    }
+
+    @Test
+    fun `skip with unknown durations stays in current file and uses runtime duration when available`() {
+        val unknown =
+            AudioTimeline(
+                manifest.copy(assets = listOf(assets[0].copy(durationMs = null), assets[1]))
+            )
+        assertEquals(AudioSeek(0, 20000), unknown.skip(0, 15000, 30000, 20000))
+        assertEquals(AudioSeek(1, 0), unknown.skip(1, 5000, -15000, 30000))
+        assertEquals(AudioSeek(0, 45000), unknown.skip(0, 15000, 30000, -1))
+    }
 }
