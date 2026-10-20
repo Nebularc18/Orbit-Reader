@@ -36,6 +36,17 @@ class AudioTimeline(val manifest: AudioManifest) {
         return AudioSeek(low, (time - offsets[low]).coerceAtMost(manifest.assets[low].durationMs!!))
     }
 
+    fun skip(assetIndex: Int, positionMs: Long, deltaMs: Long, currentDurationMs: Long): AudioSeek {
+        val index = assetIndex.coerceIn(0, manifest.assets.lastIndex)
+        if (hasDurations) return seek(elapsed(index, positionMs) + deltaMs)!!
+        // Unknown file lengths cannot safely map a seek across file boundaries.
+        val duration =
+            manifest.assets[index].durationMs?.takeIf { it > 0 }
+                ?: currentDurationMs.takeIf { it > 0 }
+        val target = (positionMs + deltaMs).coerceAtLeast(0)
+        return AudioSeek(index, duration?.let { target.coerceAtMost(it) } ?: target)
+    }
+
     fun chapterIndex(elapsedMs: Long): Int {
         var low = 0
         var high = manifest.chapters.lastIndex

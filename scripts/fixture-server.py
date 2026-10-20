@@ -71,7 +71,7 @@ class Handler(BaseHTTPRequestHandler):
             book = MANIFEST["book"]
             matches = data.get("q", "").casefold() in (book["title"] + " " + " ".join(book["authors"])).casefold()
             items = [{"id": book["id"], "title": book["title"], "authors": book["authors"], "coverVersion": MANIFEST["revision"]}] if matches else []
-            return self.send_json({"items": items if data["pagination"]["page"] == 1 else [], "total": len(items), "page": data["pagination"]["page"], "size": data["pagination"]["size"]})
+            return self.send_json({"items": items if data["pagination"]["page"] == 0 else [], "total": len(items), "page": data["pagination"]["page"], "size": data["pagination"]["size"]})
         self.send_json({}, 404)
 
     def do_GET(self):
@@ -89,12 +89,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_file(BOOK_DIR / f"{asset['fileId']}.{asset['format']}", "audio/mp4" if asset['format'] in ['m4b', 'm4a'] else "audio/mpeg")
             content = AUDIO[asset["sequence"]]
             start = 0
-            if self.headers.get("Range"):
+            etag = f'"{asset["etag"]}"'
+            if self.headers.get("Range") and self.headers.get("If-Range", etag) == etag:
                 start = int(self.headers["Range"].split("=")[1].split("-")[0])
             if start >= len(content):
                 return self.send_json({}, 416)
             self.send_response(206 if start else 200)
             self.send_header("Content-Type", "audio/wav")
+            self.send_header("ETag", etag)
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Content-Length", len(content) - start)
             if start:
@@ -108,7 +110,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({}, 404)
         size = path.stat().st_size
         start, end = 0, size - 1
-        ranged = self.headers.get("Range")
+        etag = f'"{size}-{path.stat().st_mtime_ns}"'
+        ranged = self.headers.get("Range") if self.headers.get("If-Range", etag) == etag else None
         if ranged:
             match = re.fullmatch(r"bytes=(\d*)-(\d*)", ranged)
             if not match or not any(match.groups()):
@@ -122,6 +125,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({}, 416)
         self.send_response(206 if ranged else 200)
         self.send_header("Content-Type", mime)
+        self.send_header("ETag", etag)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", end - start + 1)
         if ranged:

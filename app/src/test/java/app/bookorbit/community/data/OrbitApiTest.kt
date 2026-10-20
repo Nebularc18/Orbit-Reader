@@ -55,14 +55,14 @@ class OrbitApiTest {
 
     @Test
     fun `library queries remain bounded and use server search and audio filter`() {
-        server.enqueue(MockResponse().setBody("""{"items":[],"total":13000,"page":4,"size":30}"""))
+        server.enqueue(MockResponse().setBody("""{"items":[],"total":13000,"page":3,"size":30}"""))
         val response = api.books(4, "Le Guin")
         assertEquals(13000, response.total)
         val request = server.takeRequest()
         assertEquals("Bearer old-access", request.getHeader("Authorization"))
         val body = wireJson.parseToJsonElement(request.body.readUtf8()).jsonObject
         assertEquals(30, body["pagination"]!!.jsonObject["size"]!!.jsonPrimitive.int)
-        assertEquals(4, body["pagination"]!!.jsonObject["page"]!!.jsonPrimitive.int)
+        assertEquals(3, body["pagination"]!!.jsonObject["page"]!!.jsonPrimitive.int)
         assertEquals("Le Guin", body["q"]!!.jsonPrimitive.content)
         assertEquals(
             "includesAny",
@@ -74,6 +74,58 @@ class OrbitApiTest {
                 .content,
         )
         assertEquals("asc", body["sort"]!!.jsonArray[0].jsonObject["dir"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `first displayed library page requests server page zero`() {
+        server.enqueue(
+            MockResponse()
+                .setBody(
+                    """{"items":[{"id":1,"title":"First book"}],"total":1,"page":0,"size":30}"""
+                )
+        )
+        assertEquals("First book", api.books(1, "").items.single().title)
+        val body = wireJson.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        assertEquals(0, body["pagination"]!!.jsonObject["page"]!!.jsonPrimitive.int)
+    }
+
+    @Test
+    fun `resumed download keeps identity encoding and conditional range headers`() {
+        val asset =
+            AudioAsset(
+                "aud_00000000-0000-4000-8000-000000000001",
+                1,
+                0,
+                "mp3",
+                etag = "manifest-version",
+            )
+        server.enqueue(MockResponse().setResponseCode(206).setBody("remaining audio"))
+        api.download(asset, store.read()!!.scope, 8192, "\"http-version\"").close()
+        val request = server.takeRequest()
+        assertEquals("/books/api/v1/books/files/1/download", request.path)
+        assertEquals("identity", request.getHeader("Accept-Encoding"))
+        assertEquals("bytes=8192-", request.getHeader("Range"))
+        assertEquals("\"http-version\"", request.getHeader("If-Range"))
+        assertEquals("Bearer old-access", request.getHeader("Authorization"))
+    }
+
+    @Test
+    fun `download queued for another account fails before making a request`() {
+        val asset =
+            AudioAsset(
+                "aud_00000000-0000-4000-8000-000000000001",
+                1,
+                0,
+                "mp3",
+                etag = "manifest-version",
+            )
+        try {
+            api.download(asset, "different-account").close()
+            fail("Expected account scope rejection")
+        } catch (error: ApiFailure) {
+            assertEquals(401, error.status)
+        }
+        assertEquals(0, server.requestCount)
     }
 
     @Test

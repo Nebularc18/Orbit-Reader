@@ -5,6 +5,8 @@ import android.util.AtomicFile
 import java.io.File
 import kotlinx.serialization.encodeToString
 
+data class StoredDownload(val manifest: AudioManifest, val bytes: Long, val complete: Boolean)
+
 class AudioStorage(context: Context, val scope: String) {
     companion object {
         private val positionLock = Any()
@@ -80,26 +82,57 @@ class AudioStorage(context: Context, val scope: String) {
         }
 
     fun downloadedBooks(page: Int): List<AudioManifest> =
+        storedBooks().filter(::downloaded).drop((page - 1) * 30).take(30).toList()
+
+    private fun storedBooks(): Sequence<AudioManifest> =
         root
             .listFiles()
             .orEmpty()
+            .sortedBy { it.name.toIntOrNull() ?: Int.MAX_VALUE }
             .asSequence()
             .mapNotNull { dir ->
-                dir.name
-                    .toIntOrNull()
-                    ?.let { id -> runCatching { manifest(id) }.getOrNull() }
-                    ?.takeIf(::downloaded)
+                dir.name.toIntOrNull()?.let { id -> runCatching { manifest(id) }.getOrNull() }
             }
+
+    fun markDownload(manifest: AudioManifest) {
+        saveManifest(manifest)
+        File(bookDir(manifest.book.id), "download").writeText("")
+    }
+
+    fun downloads(page: Int): List<StoredDownload> =
+        storedBooks()
+            .filter { File(bookDir(it.book.id), "download").exists() || audioBytes(it.book.id) > 0 }
             .drop((page - 1) * 30)
             .take(30)
+            .map { StoredDownload(it, audioBytes(it.book.id), downloaded(it)) }
             .toList()
+
+    fun audioBytes(bookId: Int): Long =
+        bookDir(bookId)
+            .listFiles()
+            .orEmpty()
+            .filter { it.name.endsWith(".audio") || it.name.endsWith(".audio.part") }
+            .sumOf { it.length() }
+
+    fun usedBytes(): Long =
+        root.listFiles().orEmpty().sumOf { dir ->
+            dir.listFiles()
+                .orEmpty()
+                .filter { it.name.endsWith(".audio") || it.name.endsWith(".audio.part") }
+                .sumOf { it.length() }
+        }
+
+    fun availableBytes(): Long = root.usableSpace
 
     fun deleteBook(bookId: Int) =
         bookDir(bookId)
             .listFiles()
             .orEmpty()
             .filter { it.name != "position.json" }
-            .forEach { it.delete() }
+            .forEach {
+                if (!it.delete() && it.exists())
+                    throw java.io.IOException("Could not remove downloaded audio")
+            }
 
     private fun read(file: File): String? =
         if (file.exists() || File(file.path + ".bak").exists())

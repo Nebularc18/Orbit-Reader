@@ -12,6 +12,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.withLock
 
 data class LibraryState(
     val session: Session? = null,
@@ -24,6 +25,10 @@ data class LibraryState(
     val selected: AudioManifest? = null,
     val downloaded: Boolean = false,
     val wifiOnly: Boolean = true,
+    val downloads: List<StoredDownload> = emptyList(),
+    val usedBytes: Long = 0,
+    val availableBytes: Long = 0,
+    val selectedBytes: Long = 0,
 )
 
 class LibraryViewModel(application: Application) : AndroidViewModel(application) {
@@ -100,7 +105,9 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                             if (!snapshot.offline) app.api.books(snapshot.page, snapshot.query)
                             else {
                                 val stored =
-                                    AudioStorage(app, account.scope).downloadedBooks(snapshot.page)
+                                    AudioStorage(app, account.scope).downloads(snapshot.page).map {
+                                        it.manifest
+                                    }
                                 BooksPage(
                                     stored.map {
                                         BookCard(it.book.id, it.book.title, it.book.authors)
@@ -112,6 +119,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                             }
                         }
                     mutable.update { it.copy(books = result, busy = false) }
+                    refreshDownloads()
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
@@ -137,9 +145,11 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                         it.copy(
                             selected = manifest,
                             downloaded = storage.downloaded(manifest),
+                            selectedBytes = storage.audioBytes(bookId),
                             busy = false,
                         )
                     }
+                    refreshDownloads()
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
@@ -158,36 +168,122 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
 
     fun download() {
         val snapshot = mutable.value
-        enqueueDownload(
-            app,
-            snapshot.session ?: return,
-            snapshot.selected?.book?.id ?: return,
-            snapshot.wifiOnly,
-        )
+        val account = snapshot.session ?: return
+        val book = snapshot.selected ?: return
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    app.downloadLock(account.scope, book.book.id).withLock {
+                        if (app.sessions.read()?.scope == account.scope) {
+                            AudioStorage(app, account.scope).markDownload(book)
+                            enqueueDownload(app, account, book.book.id, snapshot.wifiOnly)
+                        }
+                    }
+                }
+                refreshDownloads()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: IOException) {
+                mutable.update {
+                    it.copy(
+                        error = "Could not start the download. Check device storage and try again."
+                    )
+                }
+            }
+        }
     }
 
     fun refreshDownloaded() {
-        val snapshot = mutable.value
-        val book = snapshot.selected ?: return
-        val account = snapshot.session ?: return
         viewModelScope.launch {
-            val available =
-                withContext(Dispatchers.IO) { AudioStorage(app, account.scope).downloaded(book) }
+            try {
+                refreshDownloads()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: IOException) {
+                mutable.update {
+                    it.copy(error = "Could not read downloaded audio on this device.")
+                }
+            }
+        }
+    }
+
+    private suspend fun refreshDownloads() {
+        val snapshot = mutable.value
+        val account = snapshot.session ?: return
+        if (!snapshot.offline && snapshot.selected == null) return
+        withContext(Dispatchers.IO) {
+            val storage = AudioStorage(app, account.scope)
+            val downloads = if (snapshot.offline) storage.downloads(snapshot.page) else emptyList()
+            val used = storage.usedBytes()
+            val available = storage.availableBytes()
+            val complete = snapshot.selected?.let(storage::downloaded) ?: false
+            val selectedBytes = snapshot.selected?.let { storage.audioBytes(it.book.id) } ?: 0
             mutable.update {
-                if (it.selected?.book?.id == book.book.id) it.copy(downloaded = available) else it
+                if (
+                    it.session?.scope != account.scope ||
+                        it.page != snapshot.page ||
+                        it.offline != snapshot.offline ||
+                        it.selected != snapshot.selected
+                )
+                    it
+                else
+                    it.copy(
+                        downloads = downloads,
+                        usedBytes = used,
+                        availableBytes = available,
+                        downloaded = complete,
+                        selectedBytes = selectedBytes,
+                        books =
+                            if (snapshot.offline)
+                                BooksPage(
+                                    downloads.map { entry ->
+                                        BookCard(
+                                            entry.manifest.book.id,
+                                            entry.manifest.book.title,
+                                            entry.manifest.book.authors,
+                                        )
+                                    },
+                                    -1,
+                                    snapshot.page,
+                                    30,
+                                )
+                            else it.books,
+                    )
             }
         }
     }
 
     fun removeDownload() {
         val snapshot = mutable.value
+        val account = snapshot.session ?: return
         val bookId = snapshot.selected?.book?.id ?: return
+        if (app.currentManifest.value?.book?.id == bookId) return
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                AudioStorage(app, snapshot.session!!.scope).deleteBook(bookId)
+            mutable.update { it.copy(busy = true, error = null) }
+            try {
+                withContext(Dispatchers.IO) {
+                    WorkManager.getInstance(app)
+                        .cancelUniqueWork("download-${account.scope}-$bookId")
+                        .result
+                        .get()
+                    app.downloadLock(account.scope, bookId).withLock {
+                        if (app.currentManifest.value?.book?.id != bookId)
+                            AudioStorage(app, account.scope).deleteBook(bookId)
+                    }
+                }
+                mutable.update {
+                    if (it.session?.scope == account.scope)
+                        it.copy(downloaded = false, selected = null, busy = false)
+                    else it
+                }
+                if (snapshot.offline && mutable.value.session?.scope == account.scope) browse()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                mutable.update {
+                    it.copy(busy = false, error = "Could not remove the download. Try again.")
+                }
             }
-            mutable.update { it.copy(downloaded = false, selected = null) }
-            if (snapshot.offline) browse()
         }
     }
 

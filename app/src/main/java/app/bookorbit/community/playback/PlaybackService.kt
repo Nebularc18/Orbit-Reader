@@ -20,6 +20,7 @@ import kotlinx.coroutines.*
 
 const val OPEN_BOOK = "orbit.open"
 const val SLEEP_TIMER = "orbit.sleep"
+const val RELOAD_LISTENING = "orbit.listening"
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlaybackService : MediaSessionService() {
@@ -28,7 +29,9 @@ class PlaybackService : MediaSessionService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var player: ExoPlayer
+    private lateinit var listeningPlayer: ListeningPlayer
     private lateinit var session: MediaSession
+    private var listeningJob: Job? = null
     private var manifest: AudioManifest? = null
     private var accountScope: String? = null
     private var saveJob: Job? = null
@@ -68,14 +71,32 @@ class PlaybackService : MediaSessionService() {
                     capture()
                 }
 
+                override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+                    val bookId = manifest?.book?.id ?: return
+                    val owner = accountScope ?: return
+                    if (app.sessions.read()?.scope != owner) return
+                    val previous = listeningJob
+                    listeningJob =
+                        scope.launch(Dispatchers.IO) {
+                            previous?.join()
+                            try {
+                                ListeningStorage(this@PlaybackService, owner)
+                                    .saveSpeed(bookId, playbackParameters.speed)
+                            } catch (_: Exception) {
+                                app.playbackMessage.value = "Could not save playback speed."
+                            }
+                        }
+                }
+
                 override fun onPlayerError(error: PlaybackException) {
                     app.playbackMessage.value =
                         "Playback stopped. Check your connection or download this audiobook."
                 }
             }
         )
+        listeningPlayer = ListeningPlayer(player)
         session =
-            MediaSession.Builder(this, player)
+            MediaSession.Builder(this, listeningPlayer)
                 .setSessionActivity(
                     PendingIntent.getActivity(
                         this,
@@ -105,6 +126,7 @@ class PlaybackService : MediaSessionService() {
                                         .buildUpon()
                                         .add(SessionCommand(OPEN_BOOK, Bundle.EMPTY))
                                         .add(SessionCommand(SLEEP_TIMER, Bundle.EMPTY))
+                                        .add(SessionCommand(RELOAD_LISTENING, Bundle.EMPTY))
                                         .build()
                                 )
                                 .build()
@@ -127,6 +149,33 @@ class PlaybackService : MediaSessionService() {
                                                 args.getBoolean("offline"),
                                             )
                                         }
+                                }
+                                RELOAD_LISTENING -> {
+                                    val owner = accountScope
+                                    scope.launch {
+                                        if (owner != null && app.sessions.read()?.scope == owner) {
+                                            try {
+                                                val intervals =
+                                                    withContext(Dispatchers.IO) {
+                                                        ListeningStorage(
+                                                                this@PlaybackService,
+                                                                owner,
+                                                            )
+                                                            .intervals()
+                                                    }
+                                                if (
+                                                    accountScope == owner &&
+                                                        app.sessions.read()?.scope == owner
+                                                )
+                                                    listeningPlayer.setIntervals(intervals)
+                                            } catch (error: CancellationException) {
+                                                throw error
+                                            } catch (_: Exception) {
+                                                app.playbackMessage.value =
+                                                    "Could not apply skip intervals. Reopen this book to try again."
+                                            }
+                                        }
+                                    }
                                 }
                                 SLEEP_TIMER -> {
                                     timer?.cancel()
@@ -207,12 +256,22 @@ class PlaybackService : MediaSessionService() {
                     if (position != null) storage.savePosition(bookId, position)
                     loaded to position
                 }
+            listeningJob?.join()
+            val settings =
+                withContext(Dispatchers.IO) {
+                    val listening = ListeningStorage(this@PlaybackService, account.scope)
+                    listening.speed(bookId) to listening.intervals()
+                }
+            val isDownloaded = withContext(Dispatchers.IO) { storage.downloaded(result.first) }
             if (app.sessions.read()?.scope != account.scope) return
             capture()
             saveJob?.join()
+            if (app.sessions.read()?.scope != account.scope) return
             manifest = result.first
             accountScope = account.scope
-            val isDownloaded = withContext(Dispatchers.IO) { storage.downloaded(result.first) }
+            listeningPlayer.setManifest(result.first)
+            listeningPlayer.setIntervals(settings.second)
+            player.setPlaybackSpeed(settings.first)
             val items =
                 result.first.assets.map { asset ->
                     val file = storage.asset(bookId, asset)
@@ -284,9 +343,12 @@ class PlaybackService : MediaSessionService() {
     override fun onDestroy() {
         capture()
         // Persist the final position before the service's coroutine scope disappears.
-        runBlocking { saveJob?.join() }
+        runBlocking {
+            saveJob?.join()
+            listeningJob?.join()
+        }
         scope.cancel()
-        player.release()
+        listeningPlayer.release()
         session.release()
         app.currentManifest.value = null
         super.onDestroy()

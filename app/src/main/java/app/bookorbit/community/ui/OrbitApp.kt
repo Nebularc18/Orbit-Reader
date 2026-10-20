@@ -3,6 +3,7 @@ package app.bookorbit.community.ui
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
+import android.text.format.Formatter
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -35,6 +36,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import app.bookorbit.community.OrbitApplication
 import app.bookorbit.community.data.*
 import app.bookorbit.community.playback.*
@@ -47,6 +50,13 @@ import coil.request.ImageRequest
 @Composable
 fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaController?) {
     val state by model.state.collectAsStateWithLifecycle()
+    val work by
+        remember(state.session?.scope) {
+                WorkManager.getInstance(app)
+                    .getWorkInfosByTagFlow("downloads-${state.session?.scope}")
+            }
+            .collectAsStateWithLifecycle(initialValue = emptyList())
+    LaunchedEffect(work) { model.refreshDownloaded() }
     val current by app.currentManifest.collectAsStateWithLifecycle()
     val message by app.playbackMessage.collectAsStateWithLifecycle()
     val conflict by app.progressConflict.collectAsStateWithLifecycle()
@@ -134,7 +144,7 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                             .padding(horizontal = 20.dp)
                     ) {
                         Text(
-                            if (state.offline) "Your offline library" else "A good book. Anywhere.",
+                            if (state.offline) "Your downloads" else "A good book. Anywhere.",
                             style = MaterialTheme.typography.headlineMedium,
                             fontFamily = FontFamily.Serif,
                         )
@@ -146,6 +156,12 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 6.dp, bottom = 20.dp),
                         )
+                        if (state.offline)
+                            Text(
+                                "${Formatter.formatShortFileSize(app, state.usedBytes)} used · ${Formatter.formatShortFileSize(app, state.availableBytes)} free on device",
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.padding(bottom = 12.dp),
+                            )
                         if (!state.offline)
                             OutlinedTextField(
                                 value = state.query,
@@ -218,6 +234,37 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 maxLines = 2,
                                             )
+                                            if (state.offline) {
+                                                val download =
+                                                    state.downloads.firstOrNull {
+                                                        it.manifest.book.id == book.id
+                                                    }
+                                                val job =
+                                                    work.firstOrNull {
+                                                        it.tags.contains("book-${book.id}") &&
+                                                            !it.state.isFinished
+                                                    }
+                                                        ?: work.firstOrNull {
+                                                            it.tags.contains("book-${book.id}")
+                                                        }
+                                                Text(
+                                                    (if (download?.complete == true)
+                                                        "Available offline"
+                                                    else
+                                                        when (job?.state) {
+                                                            WorkInfo.State.RUNNING -> "Downloading"
+                                                            WorkInfo.State.ENQUEUED,
+                                                            WorkInfo.State.BLOCKED ->
+                                                                "Waiting for network or retry"
+                                                            WorkInfo.State.FAILED ->
+                                                                "Failed · Tap to retry"
+                                                            else -> "Incomplete · Tap to resume"
+                                                        }) +
+                                                        " · ${Formatter.formatShortFileSize(app, download?.bytes ?: 0)}",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    modifier = Modifier.padding(top = 8.dp),
+                                                )
+                                            }
                                             book.readingProgress
                                                 ?.takeIf { it > 0 }
                                                 ?.let { progress ->

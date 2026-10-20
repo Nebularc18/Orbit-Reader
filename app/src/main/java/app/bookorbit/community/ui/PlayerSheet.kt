@@ -15,15 +15,27 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.work.WorkManager
 import app.bookorbit.community.OrbitApplication
 import app.bookorbit.community.data.AudioManifest
+import app.bookorbit.community.data.playbackSpeeds
 import app.bookorbit.community.playback.AudioTimeline
+import app.bookorbit.community.playback.RELOAD_LISTENING
 import app.bookorbit.community.playback.SLEEP_TIMER
 import kotlinx.coroutines.delay
+
+private data class BookmarkDraft(
+    val assetIndex: Int,
+    val positionMs: Long,
+    val title: String,
+    val id: String? = null,
+)
 
 @Composable
 fun PlayerSheet(book: AudioManifest, controller: MediaController, app: OrbitApplication) {
@@ -40,6 +52,19 @@ fun PlayerSheet(book: AudioManifest, controller: MediaController, app: OrbitAppl
     var bookScrub by remember(book.book.id) { mutableStateOf<Float?>(null) }
     val sleep by app.sleepMinutes.collectAsStateWithLifecycle()
     val session = remember { app.sessions.read()!! }
+    val model: PlayerViewModel =
+        viewModel(
+            key = "listening-${session.scope}-${book.book.id}-${book.revision}",
+            factory = viewModelFactory { initializer { PlayerViewModel(app, session.scope, book) } },
+        )
+    val listening by model.state.collectAsStateWithLifecycle()
+    var showBookmarks by remember(book) { mutableStateOf(false) }
+    var showSkips by remember { mutableStateOf(false) }
+    var draft by remember(book) { mutableStateOf<BookmarkDraft?>(null) }
+    var backSeconds by remember { mutableIntStateOf((controller.seekBackIncrement / 1000).toInt()) }
+    var forwardSeconds by remember {
+        mutableIntStateOf((controller.seekForwardIncrement / 1000).toInt())
+    }
     val syncWork by
         remember(book.book.id) {
                 WorkManager.getInstance(app)
@@ -50,6 +75,9 @@ fun PlayerSheet(book: AudioManifest, controller: MediaController, app: OrbitAppl
         while (true) {
             position = controller.currentPosition.coerceAtLeast(0)
             playing = controller.isPlaying
+            speed = controller.playbackParameters.speed
+            backSeconds = (controller.seekBackIncrement / 1000).toInt()
+            forwardSeconds = (controller.seekForwardIncrement / 1000).toInt()
             assetIndex = controller.currentMediaItemIndex.coerceAtLeast(0)
             delay(500)
         }
@@ -127,8 +155,11 @@ fun PlayerSheet(book: AudioManifest, controller: MediaController, app: OrbitAppl
             horizontalArrangement = Arrangement.spacedBy(28.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = { controller.seekBack() }) {
-                Icon(Icons.Rounded.Replay, "Back 15 seconds", Modifier.size(32.dp))
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                IconButton(onClick = { controller.seekBack() }) {
+                    Icon(Icons.Rounded.Replay, "Back $backSeconds seconds", Modifier.size(32.dp))
+                }
+                Text("${backSeconds}s", style = MaterialTheme.typography.labelSmall)
             }
             FilledIconButton(
                 onClick = {
@@ -145,8 +176,15 @@ fun PlayerSheet(book: AudioManifest, controller: MediaController, app: OrbitAppl
                     Modifier.size(36.dp),
                 )
             }
-            IconButton(onClick = { controller.seekForward() }) {
-                Icon(Icons.Rounded.Forward30, "Forward 30 seconds", Modifier.size(32.dp))
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                IconButton(onClick = { controller.seekForward() }) {
+                    Icon(
+                        Icons.Rounded.FastForward,
+                        "Forward $forwardSeconds seconds",
+                        Modifier.size(32.dp),
+                    )
+                }
+                Text("${forwardSeconds}s", style = MaterialTheme.typography.labelSmall)
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -156,6 +194,11 @@ fun PlayerSheet(book: AudioManifest, controller: MediaController, app: OrbitAppl
                 Text(if (sleep > 0) "Sleep: $sleep min" else "Sleep timer")
             }
         }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            TextButton(onClick = { showBookmarks = true }) { Text("Bookmarks") }
+            TextButton(onClick = { showSkips = true }) { Text("Skip intervals") }
+        }
+        listening.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         syncWork.firstOrNull()?.outputData?.getString("error")?.let {
             Text(
                 it,
@@ -170,7 +213,7 @@ fun PlayerSheet(book: AudioManifest, controller: MediaController, app: OrbitAppl
             title = { Text("Playback speed") },
             text = {
                 Column {
-                    listOf(0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f).forEach { value ->
+                    playbackSpeeds.forEach { value ->
                         TextButton(
                             onClick = {
                                 controller.setPlaybackSpeed(value)
@@ -185,6 +228,56 @@ fun PlayerSheet(book: AudioManifest, controller: MediaController, app: OrbitAppl
             },
             confirmButton = { TextButton(onClick = { showSpeed = false }) { Text("Close") } },
         )
+    if (showSkips)
+        SkipIntervalsDialog(
+            initial = listening.intervals,
+            busy = listening.busy,
+            error = listening.error,
+            onDismiss = { showSkips = false },
+            onSave = { value ->
+                model.setIntervals(value) {
+                    controller.sendCustomCommand(
+                        SessionCommand(RELOAD_LISTENING, Bundle.EMPTY),
+                        Bundle.EMPTY,
+                    )
+                    showSkips = false
+                }
+            },
+        )
+    if (showBookmarks && draft == null)
+        BookmarksDialog(
+            book = book,
+            bookmarks = listening.bookmarks,
+            busy = listening.busy,
+            error = listening.error,
+            onDismiss = { showBookmarks = false },
+            onAdd = {
+                val index = controller.currentMediaItemIndex.coerceAtLeast(0)
+                val at = controller.currentPosition.coerceAtLeast(0)
+                draft = BookmarkDraft(index, at, "Part ${index + 1} · ${duration(at)}")
+            },
+            onSeek = { bookmark ->
+                bookmark.target(book)?.let { index ->
+                    controller.seekTo(index, bookmark.positionMs)
+                }
+                showBookmarks = false
+            },
+            onRename = { bookmark ->
+                draft = BookmarkDraft(0, bookmark.positionMs, bookmark.title, bookmark.id)
+            },
+            onDelete = model::deleteBookmark,
+        )
+    draft?.let { edit ->
+        BookmarkNameDialog(
+            initial = edit.title,
+            onDismiss = { draft = null },
+            onSave = { name ->
+                if (edit.id == null) model.addBookmark(edit.assetIndex, edit.positionMs, name)
+                else model.renameBookmark(edit.id, name)
+                draft = null
+            },
+        )
+    }
     if (showTimer)
         AlertDialog(
             onDismissRequest = { showTimer = false },

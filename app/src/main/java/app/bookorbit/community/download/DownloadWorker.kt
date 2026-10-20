@@ -13,6 +13,9 @@ import app.bookorbit.community.R
 import app.bookorbit.community.data.*
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
@@ -20,7 +23,11 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) :
     CoroutineWorker(context, parameters) {
     override suspend fun doWork(): Result {
         setForeground(notification(inputData.getInt("bookId", 0), "Waiting to download"))
-        return (applicationContext as OrbitApplication).downloadSlots.withPermit { download() }
+        val app = applicationContext as OrbitApplication
+        return app.downloadSlots.withPermit {
+            app.downloadLock(inputData.getString("scope") ?: "", inputData.getInt("bookId", 0))
+                .withLock { download() }
+        }
     }
 
     private suspend fun download(): Result =
@@ -39,8 +46,15 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) :
             try {
                 setForeground(notification(bookId, "Preparing audiobook"))
                 val manifest = app.api.manifest(bookId, accountScope)
-                storage.saveManifest(manifest)
+                storage.markDownload(manifest)
                 val progress = DownloadProgress(manifest.assets)
+                manifest.assets.forEachIndexed { index, asset ->
+                    val file = storage.asset(bookId, asset)
+                    val bytes =
+                        if (file.isFile) file.length()
+                        else java.io.File(file.path + ".part").length()
+                    progress.update(index, bytes)
+                }
                 suspend fun report(index: Int) {
                     val percent = progress.fraction?.let { "${(it * 100).toInt()}% · " } ?: ""
                     setProgress(
@@ -69,45 +83,36 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) :
                         continue
                     }
                     report(index)
-                    val partial = java.io.File(file.path + ".part")
-                    try {
-                        app.api.download(asset, accountScope).use { response ->
-                            val body = response.body ?: throw IOException("No audio received")
-                            progress.update(index, 0, body.contentLength())
-                            body.byteStream().use { source ->
-                                partial.outputStream().use { target ->
-                                    val buffer = ByteArray(64 * 1024)
-                                    var bytes = 0L
-                                    var lastReport = SystemClock.elapsedRealtime()
-                                    while (true) {
-                                        val count = source.read(buffer)
-                                        if (count < 0) break
-                                        if (isStopped) throw IOException("Download cancelled")
-                                        target.write(buffer, 0, count)
-                                        bytes += count
-                                        if (SystemClock.elapsedRealtime() - lastReport >= 1000) {
-                                            if (app.sessions.read()?.scope != accountScope)
-                                                throw IOException("Download cancelled")
-                                            lastReport = SystemClock.elapsedRealtime()
-                                            progress.update(index, bytes)
-                                            report(index)
-                                        }
-                                    }
-                                    progress.update(index, bytes)
+                    var lastReport = 0L
+                    val coroutineContext = currentCoroutineContext()
+                    AudioTransfer()
+                        .download(
+                            file,
+                            asset.sizeBytes,
+                            request = { offset, validator ->
+                                app.api.download(asset, accountScope, offset, validator)
+                            },
+                            checkActive = {
+                                coroutineContext.ensureActive()
+                                if (isStopped) throw IOException("Download cancelled")
+                            },
+                            progress = { bytes, total ->
+                                progress.update(index, bytes, total)
+                                if (SystemClock.elapsedRealtime() - lastReport >= 1000) {
+                                    if (app.sessions.read()?.scope != accountScope)
+                                        throw IOException("Download cancelled")
+                                    lastReport = SystemClock.elapsedRealtime()
+                                    report(index)
                                 }
-                            }
-                        }
-                        if (asset.sizeBytes != null && partial.length() != asset.sizeBytes)
-                            throw IOException("Incomplete audio download")
-                        if (!partial.renameTo(file)) throw IOException("Could not finish download")
-                    } finally {
-                        partial.delete()
-                    }
+                            },
+                        )
                     report(index)
                 }
                 Result.success()
             } catch (error: ApiFailure) {
-                Result.failure(workDataOf("error" to error.message))
+                if ((error.status == 429 || error.status in 500..599) && runAttemptCount < 4)
+                    Result.retry()
+                else Result.failure(workDataOf("error" to error.message))
             } catch (_: IOException) {
                 if (runAttemptCount < 4) Result.retry()
                 else
@@ -137,7 +142,7 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) :
                 .setProgress(100, fraction?.let { (it * 100).toInt() } ?: 0, fraction == null)
                 .addAction(
                     0,
-                    "Cancel",
+                    "Pause",
                     WorkManager.getInstance(applicationContext).createCancelPendingIntent(id),
                 )
                 .build()
@@ -159,6 +164,8 @@ fun enqueueDownload(context: Context, session: Session, bookId: Int, wifiOnly: B
             OneTimeWorkRequestBuilder<DownloadWorker>()
                 .setInputData(workDataOf("scope" to session.scope, "bookId" to bookId))
                 .addTag("account-${session.scope}")
+                .addTag("downloads-${session.scope}")
+                .addTag("book-$bookId")
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(
