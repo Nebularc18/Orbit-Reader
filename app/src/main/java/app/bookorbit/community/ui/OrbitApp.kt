@@ -11,6 +11,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -35,6 +36,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
+import androidx.paging.LoadState
+import androidx.paging.compose.collectAsLazyPagingItems
+import androidx.paging.compose.itemKey
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import app.bookorbit.community.OrbitApplication
@@ -48,6 +52,9 @@ import coil.request.ImageRequest
 @Composable
 fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaController?) {
     val state by model.state.collectAsStateWithLifecycle()
+    val catalog = model.catalog.collectAsLazyPagingItems()
+    val catalogScroll = rememberLazyListState()
+    LaunchedEffect(state.query, state.offline) { catalogScroll.scrollToItem(0) }
     val work by
         remember(state.session?.scope) {
                 WorkManager.getInstance(app)
@@ -55,6 +62,9 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
             }
             .collectAsStateWithLifecycle(initialValue = emptyList())
     LaunchedEffect(work) { model.refreshDownloaded() }
+    LaunchedEffect(state.offline, work.map { it.id to it.state }) {
+        if (state.offline) catalog.refresh()
+    }
     val current by app.currentManifest.collectAsStateWithLifecycle()
     val message by app.playbackMessage.collectAsStateWithLifecycle()
     val conflict by app.progressConflict.collectAsStateWithLifecycle()
@@ -170,14 +180,9 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                             app,
                             state.session!!,
                             Modifier.padding(padding),
-                            onListen = { id ->
-                                if (Build.VERSION.SDK_INT >= 33)
-                                    notificationPermission.launch(
-                                        Manifest.permission.POST_NOTIFICATIONS
-                                    )
-                                openBook(controller, id)
-                                showPlayer = true
-                            },
+                            opening = state.busy,
+                            openError = state.error,
+                            onListen = model::select,
                             onRead = { id ->
                                 pendingEbook = id
                                 showDashboard = false
@@ -234,7 +239,11 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                                 )
                             state.error?.let { ErrorNotice(it) }
                             message?.let { ErrorNotice(it) }
-                            if (state.books?.items?.isEmpty() == true && !state.busy)
+                            if (
+                                catalog.itemCount == 0 &&
+                                    catalog.loadState.refresh is LoadState.NotLoading &&
+                                    !state.busy
+                            )
                                 Column(Modifier.padding(vertical = 40.dp)) {
                                     Icon(
                                         if (state.offline) Icons.Rounded.Download
@@ -258,10 +267,15 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                                 }
                             LazyColumn(
                                 Modifier.weight(1f),
+                                state = catalogScroll,
                                 contentPadding = PaddingValues(vertical = 16.dp),
                                 verticalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
-                                items(state.books?.items.orEmpty(), key = { it.id }) { book ->
+                                catalogLoading(catalog.loadState.refresh, catalog::retry, "refresh")
+                                catalogLoading(catalog.loadState.prepend, catalog::retry, "prepend")
+                                items(count = catalog.itemCount, key = catalog.itemKey { it.id }) {
+                                    index ->
+                                    val book = catalog[index] ?: return@items
                                     Surface(
                                         shape = RoundedCornerShape(16.dp),
                                         tonalElevation = 1.dp,
@@ -298,10 +312,7 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                                                     maxLines = 2,
                                                 )
                                                 if (state.offline) {
-                                                    val download =
-                                                        state.downloads.firstOrNull {
-                                                            it.manifest.book.id == book.id
-                                                        }
+                                                    val download = book.localDownload
                                                     val job =
                                                         work.firstOrNull {
                                                             it.tags.contains("book-${book.id}") &&
@@ -311,7 +322,11 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                                                                 it.tags.contains("book-${book.id}")
                                                             }
                                                     Text(
-                                                        (if (download?.complete == true)
+                                                        (if (
+                                                            download?.complete == true ||
+                                                                job?.state ==
+                                                                    WorkInfo.State.SUCCEEDED
+                                                        )
                                                             "Available offline"
                                                         else
                                                             when (job?.state) {
@@ -324,7 +339,7 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                                                                     "Failed · Tap to retry"
                                                                 else -> "Incomplete · Tap to resume"
                                                             }) +
-                                                            " · ${Formatter.formatShortFileSize(app, download?.bytes ?: 0)}",
+                                                            " · ${Formatter.formatShortFileSize(app, maxOf(download?.bytes ?: 0, job?.progress?.getLong("downloadedBytes", 0) ?: 0))}",
                                                         style =
                                                             MaterialTheme.typography.labelMedium,
                                                         modifier = Modifier.padding(top = 8.dp),
@@ -349,36 +364,8 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                                         }
                                     }
                                 }
+                                catalogLoading(catalog.loadState.append, catalog::retry, "append")
                             }
-                            if (state.books != null)
-                                Row(
-                                    Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    TextButton(
-                                        onClick = { model.page(-1) },
-                                        enabled = state.page > 1 && !state.busy,
-                                    ) {
-                                        Text("Previous")
-                                    }
-                                    Text(
-                                        "Page ${state.page}" +
-                                            if (state.books!!.total >= 0)
-                                                " · ${state.books!!.total} books"
-                                            else "",
-                                        style = MaterialTheme.typography.labelMedium,
-                                    )
-                                    TextButton(
-                                        onClick = { model.page(1) },
-                                        enabled =
-                                            !state.busy &&
-                                                (if (state.offline) state.books!!.items.size == 30
-                                                else state.page * 30 < state.books!!.total),
-                                    ) {
-                                        Text("Next")
-                                    }
-                                }
                         }
                 }
             state.selected?.let { book ->

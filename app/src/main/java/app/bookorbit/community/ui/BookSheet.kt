@@ -56,12 +56,25 @@ fun BookSheet(
     val notificationPermission =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     var confirmDelete by remember { mutableStateOf(false) }
-    ModalBottomSheet(onDismissRequest = model::closeDetail) {
+    ModalBottomSheet(
+        modifier = Modifier.fillMaxHeight(0.95f),
+        onDismissRequest = model::closeDetail,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    ) {
         LazyColumn(
-            Modifier.fillMaxWidth().heightIn(max = 700.dp).padding(horizontal = 24.dp),
+            Modifier.fillMaxWidth().weight(1f).padding(horizontal = 24.dp),
             contentPadding = PaddingValues(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            item {
+                BookCover(
+                    app,
+                    state.session!!,
+                    book.book.id,
+                    state.details?.coverVersion ?: book.revision,
+                    Modifier.size(152.dp, 184.dp),
+                )
+            }
             item {
                 Text(
                     book.book.title,
@@ -91,7 +104,7 @@ fun BookSheet(
             item {
                 Button(
                     onClick = onPlay,
-                    enabled = controller != null && (!state.offline || complete),
+                    enabled = controller != null,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("Listen now")
@@ -180,6 +193,17 @@ fun BookSheet(
                         Text("Remove download")
                     }
                 }
+            if (state.detailsBusy) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+            state.detailsError?.let { message ->
+                item {
+                    Text(
+                        message,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+            state.details?.let { detail -> item { BookInformation(detail) } }
             if (book.chapters.isNotEmpty())
                 item {
                     Text(

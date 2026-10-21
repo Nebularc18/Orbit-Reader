@@ -44,6 +44,7 @@ data class BookCard(
     val coverVersion: String = "",
     val files: List<EbookFile> = emptyList(),
     val seriesName: String? = null,
+    @kotlinx.serialization.Transient val localDownload: LocalDownloadStatus? = null,
 )
 
 @Serializable
@@ -162,7 +163,28 @@ data class EbookDetail(
     val title: String? = null,
     val authors: List<EbookAuthor> = emptyList(),
     val files: List<EbookFile> = emptyList(),
+    val subtitle: String? = null,
+    val description: String? = null,
+    val seriesName: String? = null,
+    val seriesIndex: String? = null,
+    val publisher: String? = null,
+    val publishedDate: String? = null,
+    val publishedYear: Int? = null,
+    val language: String? = null,
+    val pageCount: Int? = null,
+    val isbn10: String? = null,
+    val isbn13: String? = null,
+    val rating: Double? = null,
+    val genres: List<String> = emptyList(),
+    val tags: List<String> = emptyList(),
+    val libraryName: String? = null,
+    val coverVersion: String = "",
+    val personalNote: String? = null,
+    val collections: List<EbookAuthor> = emptyList(),
+    val readStatus: BookReadStatus? = null,
 )
+
+@Serializable data class BookReadStatus(val status: String)
 
 @Serializable
 data class EbookProgress(
@@ -219,3 +241,5 @@ data class AnnotationCreate(
 @Serializable data class AnnotationEdit(val note: String?)
 
 @Serializable data class DashboardShelf(val books: List<BookCard> = emptyList())
+
+data class LocalDownloadStatus(val bytes: Long, val complete: Boolean)
