@@ -7,6 +7,7 @@ import androidx.media3.common.*
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.PlayerMessage
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.*
 import app.bookorbit.community.MainActivity
@@ -36,6 +37,8 @@ class PlaybackService : MediaSessionService() {
     private var accountScope: String? = null
     private var saveJob: Job? = null
     private var timer: Job? = null
+    private var chapterTimer: PlayerMessage? = null
+    private var chapterTarget: AudioSeek? = null
     private var openJob: Job? = null
 
     override fun onCreate() {
@@ -68,7 +71,16 @@ class PlaybackService : MediaSessionService() {
                     newPosition: Player.PositionInfo,
                     reason: Int,
                 ) {
+                    chapterTarget?.let {
+                        if (it.reachedBy(newPosition.mediaItemIndex, newPosition.positionMs))
+                            finishSleepTimer()
+                    }
                     capture()
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_ENDED && chapterTarget != null)
+                        finishSleepTimer()
                 }
 
                 override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
@@ -146,7 +158,6 @@ class PlaybackService : MediaSessionService() {
                                             open(
                                                 args.getInt("bookId"),
                                                 args.getString("resolution"),
-                                                args.getBoolean("offline"),
                                             )
                                         }
                                 }
@@ -178,16 +189,48 @@ class PlaybackService : MediaSessionService() {
                                     }
                                 }
                                 SLEEP_TIMER -> {
-                                    timer?.cancel()
+                                    val endOfChapter = args.getBoolean("endOfChapter")
                                     val minutes = args.getInt("minutes")
-                                    app.sleepMinutes.value = minutes
-                                    if (minutes > 0)
+                                    val target =
+                                        if (endOfChapter)
+                                            manifest?.let {
+                                                AudioTimeline(it)
+                                                    .chapterEnd(
+                                                        player.currentMediaItemIndex,
+                                                        player.currentPosition,
+                                                    )
+                                            }
+                                        else null
+                                    if (
+                                        (endOfChapter && target == null) ||
+                                            (!endOfChapter && minutes !in listOf(0, 15, 30, 45, 60))
+                                    ) {
+                                        app.playbackMessage.value =
+                                            "A chapter boundary is not available at this position."
+                                        return Futures.immediateFuture(
+                                            SessionResult(SessionError.ERROR_BAD_VALUE)
+                                        )
+                                    }
+                                    cancelSleepTimer()
+                                    if (target != null) {
+                                        chapterTarget = target
+                                        app.sleepAtChapterEnd.value = true
+                                        chapterTimer =
+                                            player
+                                                .createMessage { _, _ ->
+                                                    if (chapterTarget === target) finishSleepTimer()
+                                                }
+                                                .setLooper(mainLooper)
+                                                .setPosition(target.assetIndex, target.positionMs)
+                                                .send()
+                                    } else if (minutes > 0) {
+                                        app.sleepMinutes.value = minutes
                                         timer =
                                             scope.launch {
                                                 delay(minutes * 60_000L)
-                                                player.pause()
-                                                app.sleepMinutes.value = 0
+                                                finishSleepTimer()
                                             }
+                                    }
                                 }
                             }
                             return Futures.immediateFuture(
@@ -199,13 +242,13 @@ class PlaybackService : MediaSessionService() {
                 .build()
         scope.launch {
             while (isActive) {
-                delay(10_000)
+                delay(if (networkAvailable(this@PlaybackService)) 5_000 else 10_000)
                 if (player.isPlaying) capture()
             }
         }
     }
 
-    private suspend fun open(bookId: Int, resolution: String?, offline: Boolean) {
+    private suspend fun open(bookId: Int, resolution: String?) {
         app.playbackMessage.value = null
         app.progressConflict.value = null
         try {
@@ -217,7 +260,8 @@ class PlaybackService : MediaSessionService() {
                     val loaded = cached ?: app.api.manifest(bookId)
                     val remote =
                         try {
-                            if (offline && cached != null) null else app.api.progress(bookId)
+                            if (cached != null && !networkAvailable(this@PlaybackService)) null
+                            else app.api.progress(bookId)
                         } catch (error: ApiFailure) {
                             throw error
                         } catch (error: IOException) {
@@ -267,6 +311,7 @@ class PlaybackService : MediaSessionService() {
             capture()
             saveJob?.join()
             if (app.sessions.read()?.scope != account.scope) return
+            if (chapterTarget != null) cancelSleepTimer()
             manifest = result.first
             accountScope = account.scope
             listeningPlayer.setManifest(result.first)
@@ -309,6 +354,21 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    private fun cancelSleepTimer() {
+        timer?.cancel()
+        timer = null
+        chapterTimer?.cancel()
+        chapterTimer = null
+        chapterTarget = null
+        app.sleepMinutes.value = 0
+        app.sleepAtChapterEnd.value = false
+    }
+
+    private fun finishSleepTimer() {
+        cancelSleepTimer()
+        player.pause()
+    }
+
     private fun capture() {
         val book = manifest ?: return
         val owner = accountScope ?: return
@@ -341,6 +401,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        cancelSleepTimer()
         capture()
         // Persist the final position before the service's coroutine scope disappears.
         runBlocking {

@@ -143,7 +143,12 @@ class OrbitApi(val sessions: SessionStore) {
             }
         }
 
-    fun books(page: Int, query: String): BooksPage {
+    fun dashboard(type: String, owner: String): DashboardShelf {
+        require(type in setOf("continue-listening", "continue-reading", "up-next-in-series"))
+        return decode(request("dashboard/scrollers/$type?limit=10", expectedScope = owner))
+    }
+
+    fun books(page: Int, query: String, ebooks: Boolean = false): BooksPage {
         require(page > 0)
         return decode(
             request(
@@ -186,14 +191,24 @@ class OrbitApi(val sessions: SessionStore) {
                                                 put(
                                                     "value",
                                                     buildJsonArray {
-                                                        listOf(
-                                                                "m4b",
-                                                                "mp3",
-                                                                "m4a",
-                                                                "opus",
-                                                                "ogg",
-                                                                "flac",
-                                                            )
+                                                        (if (ebooks)
+                                                                listOf(
+                                                                    "epub",
+                                                                    "kepub",
+                                                                    "pdf",
+                                                                    "cbz",
+                                                                    "cbr",
+                                                                    "cb7",
+                                                                )
+                                                            else
+                                                                listOf(
+                                                                    "m4b",
+                                                                    "mp3",
+                                                                    "m4a",
+                                                                    "opus",
+                                                                    "ogg",
+                                                                    "flac",
+                                                                ))
                                                             .forEach { add(it) }
                                                     },
                                                 )
@@ -208,6 +223,67 @@ class OrbitApi(val sessions: SessionStore) {
             )
         )
     }
+
+    fun ebookProgress(fileId: Int, owner: String): EbookProgress =
+        decode(request("books/files/$fileId/progress", expectedScope = owner))
+
+    fun saveEbookProgress(fileId: Int, owner: String, value: EbookProgressWrite) {
+        require(value.percentage.isFinite() && value.percentage in 0.0..100.0)
+        request("books/files/$fileId/progress", "POST", wireJson.encodeToString(value), owner)
+            .close()
+    }
+
+    fun annotations(bookId: Int, fileId: Int, owner: String, page: Int): AnnotationPage {
+        require(page > 0)
+        return decode(
+            request(
+                "books/$bookId/annotations?bookFileId=$fileId&page=$page&pageSize=25&sortBy=createdAt&sortDir=desc",
+                expectedScope = owner,
+            )
+        )
+    }
+
+    fun createAnnotation(bookId: Int, owner: String, value: AnnotationCreate): BookAnnotation {
+        require((value.cfi != null) != (value.pdf != null))
+        require(
+            value.text.isNotBlank() &&
+                value.text.length <= 10000 &&
+                value.note.orEmpty().length <= 10000
+        )
+        return decode(
+            request("books/$bookId/annotations", "POST", wireJson.encodeToString(value), owner)
+        )
+    }
+
+    fun editAnnotation(bookId: Int, id: Int, owner: String, note: String?): BookAnnotation =
+        decode(
+            request(
+                "books/$bookId/annotations/$id",
+                "PATCH",
+                wireJson.encodeToString(AnnotationEdit(note)),
+                owner,
+            )
+        )
+
+    fun deleteAnnotation(bookId: Int, id: Int, owner: String) {
+        request("books/$bookId/annotations/$id", "DELETE", expectedScope = owner).close()
+    }
+
+    fun comicPages(fileId: Int, owner: String): Int =
+        decode<ComicPages>(request("cbz/files/$fileId/pages", expectedScope = owner)).pageCount
+
+    fun comicPage(fileId: Int, page: Int, owner: String): Response =
+        request("cbz/files/$fileId/pages/$page", expectedScope = owner)
+
+    fun ebookDetail(bookId: Int, expectedScope: String): EbookDetail =
+        decode(request("books/$bookId", expectedScope = expectedScope))
+
+    fun ebookContent(fileId: Int, expectedScope: String): Response =
+        request(
+            "books/files/$fileId/serve",
+            expectedScope = expectedScope,
+            headers = mapOf("Accept-Encoding" to "identity"),
+        )
 
     fun manifest(bookId: Int, expectedScope: String? = null): AudioManifest =
         decode<AudioManifest>(request("audiobooks/$bookId/manifest", expectedScope = expectedScope))

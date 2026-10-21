@@ -27,6 +27,31 @@ class AudioTimelineTest {
     private val timeline = AudioTimeline(manifest)
 
     @Test
+    fun `sleep target follows chapter end within a file and across file boundaries`() {
+        assertEquals(AudioSeek(0, 15000), timeline.chapterEnd(0, 1000))
+        assertEquals(AudioSeek(1, 15000), timeline.chapterEnd(0, 16000))
+        assertEquals(AudioSeek(1, 30000), timeline.chapterEnd(1, 16000))
+        assertNull(timeline.chapterEnd(1, 30000))
+        assertNull(AudioTimeline(manifest.copy(chapters = emptyList())).chapterEnd(0, 1000))
+        assertNull(
+            AudioTimeline(
+                    manifest.copy(assets = listOf(assets[0].copy(durationMs = null), assets[1]))
+                )
+                .chapterEnd(0, 1000)
+        )
+    }
+
+    @Test
+    fun `chapter sleep target is reached at its boundary or when seeking past it`() {
+        val end = AudioSeek(1, 15000)
+        assertFalse(end.reachedBy(0, 19000))
+        assertFalse(end.reachedBy(1, 14999))
+        assertTrue(end.reachedBy(1, 15000))
+        assertTrue(end.reachedBy(1, 20000))
+        assertTrue(AudioSeek(0, 15000).reachedBy(1, 0))
+    }
+
+    @Test
     fun `whole-book seek maps to the correct file and local position`() {
         assertEquals(AudioSeek(1, 15000), timeline.seek(35000))
         assertEquals(35000L, timeline.elapsed(1, 15000))

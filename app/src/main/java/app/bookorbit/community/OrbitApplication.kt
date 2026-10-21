@@ -11,9 +11,13 @@ import kotlinx.coroutines.sync.Semaphore
 class OrbitApplication : Application() {
     val sessions by lazy { EncryptedSessionStore(this) }
     val api by lazy { OrbitApi(sessions) }
+    val coverLoader by lazy {
+        coil.ImageLoader.Builder(this).okHttpClient(api.authenticatedClient).build()
+    }
     val currentManifest = MutableStateFlow<AudioManifest?>(null)
     val playbackMessage = MutableStateFlow<String?>(null)
     val progressConflict = MutableStateFlow<Int?>(null)
+    val sleepAtChapterEnd = MutableStateFlow(false)
     val sleepMinutes = MutableStateFlow(0)
     val downloadSlots = Semaphore(2)
     private val downloadLocks = Array(64) { Mutex() }

@@ -47,6 +47,13 @@ class AudioTimeline(val manifest: AudioManifest) {
         return AudioSeek(index, duration?.let { target.coerceAtMost(it) } ?: target)
     }
 
+    fun chapterEnd(assetIndex: Int, positionMs: Long): AudioSeek? {
+        if (!hasDurations || assetIndex !in manifest.assets.indices) return null
+        val at = elapsed(assetIndex, positionMs)
+        val chapter = manifest.chapters.getOrNull(chapterIndex(at)) ?: return null
+        return if (chapter.endMs > at) seek(chapter.endMs) else null
+    }
+
     fun chapterIndex(elapsedMs: Long): Int {
         var low = 0
         var high = manifest.chapters.lastIndex
@@ -68,3 +75,6 @@ class AudioTimeline(val manifest: AudioManifest) {
         else -1
     }
 }
+
+fun AudioSeek.reachedBy(assetIndex: Int, positionMs: Long): Boolean =
+    assetIndex > this.assetIndex || (assetIndex == this.assetIndex && positionMs >= this.positionMs)

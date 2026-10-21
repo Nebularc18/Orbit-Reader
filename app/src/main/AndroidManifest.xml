@@ -15,6 +15,8 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="true">
+        <activity android:name=".reader.PageReaderActivity" android:exported="false" />
+        <activity android:name=".reader.EpubReaderActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -20,6 +20,7 @@ data class ListeningState(
     val intervals: SkipIntervals = SkipIntervals(),
     val busy: Boolean = false,
     val error: String? = null,
+    val showRemainingTime: Boolean = true,
 )
 
 class PlayerViewModel(
@@ -58,6 +59,8 @@ class PlayerViewModel(
     fun setIntervals(value: SkipIntervals, onSaved: () -> Unit) =
         update(onSaved) { saveIntervals(value) }
 
+    fun toggleTimeDisplay() = update { saveShowRemainingTime(!mutable.value.showRemainingTime) }
+
     private fun update(onSaved: () -> Unit = {}, action: ListeningStorage.() -> Unit) {
         if (mutable.value.busy) return
         mutable.value = mutable.value.copy(busy = true, error = null)
@@ -72,6 +75,7 @@ class PlayerViewModel(
                             storage.bookmarks(book.book.id),
                             storage.intervals(),
                             busy = false,
+                            showRemainingTime = storage.showRemainingTime(),
                         )
                     }
                 mutable.value = loaded

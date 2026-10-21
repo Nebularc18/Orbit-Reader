@@ -75,6 +75,12 @@ class ListeningStorage(context: Context, scope: String) {
             write(File(root, "skip.json"), wireJson.encodeToString(value.validated()))
         }
 
+    fun showRemainingTime(): Boolean =
+        synchronized(lock) { read(File(root, "remaining-time")) != "false" }
+
+    fun saveShowRemainingTime(value: Boolean) =
+        synchronized(lock) { write(File(root, "remaining-time"), value.toString()) }
+
     fun bookmarks(bookId: Int): List<AudioBookmark> = synchronized(lock) { book(bookId).bookmarks }
 
     fun addBookmark(bookId: Int, value: AudioBookmark) =
