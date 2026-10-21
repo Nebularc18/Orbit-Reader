@@ -78,6 +78,7 @@ comic_buffer=io.BytesIO()
 with zipfile.ZipFile(comic_buffer,'w') as archive:
     for page in [2,1,0]: archive.writestr(f'page{[1,2,10][page]}.png',COMIC_IMAGES[page])
 CBZ=comic_buffer.getvalue()
+CATALOG_SIZE = 0
 READING_PROGRESS={}
 
 
@@ -157,9 +158,14 @@ class Handler(BaseHTTPRequestHandler):
             for entry in [PDF_BOOK, COMIC_BOOK, CONVERTED_BOOK]:
                 if not formats or any(file['format'] in formats for file in entry['files']):
                     books.append({"id":entry['id'],"title":entry['title'],"authors":["Orbit Test Reader"]})
+            if any(value in formats for value in ["mp3", "m4b", "m4a"]):
+                books.extend({'id': 1000 + i, 'title': f'Orbit Audio {i:04}', 'authors': ['Synthetic test audio']} for i in range(CATALOG_SIZE))
+            if 'epub' in formats:
+                books.extend({'id': 2000 + i, 'title': f'Orbit Ebook {i:04}', 'authors': ['Orbit Test Reader']} for i in range(CATALOG_SIZE))
             query = data.get("q", "").casefold()
             items = [{"id": book["id"], "title": book["title"], "authors": book["authors"], "coverVersion": "fixture"} for book in books if query in (book["title"] + " " + " ".join(book["authors"])).casefold()]
-            return self.send_json({"items": items if data["pagination"]["page"] == 0 else [], "total": len(items), "page": data["pagination"]["page"], "size": data["pagination"]["size"]})
+            page, size = data['pagination']['page'], data['pagination']['size']
+            return self.send_json({"items": items[page*size:(page+1)*size], "total": len(items), "page": page, "size": size})
         match=re.fullmatch(r"/api/v1/books/files/(10[1-5])/progress",self.path)
         if match:
             if set(data)-{"percentage","pageNumber","cfi","source"} or not 0<=data.get("percentage",-1)<=100:
@@ -198,7 +204,7 @@ class Handler(BaseHTTPRequestHandler):
                 rows = [dict(book, authors=['Orbit Test Reader'], coverVersion='fixture', seriesName='Quiet Orbit')]
             limit = min(10, max(1, int(parse_qs(parsed.query).get('limit', ['10'])[0])))
             return self.send_json({'books': rows[:limit], 'total': len(rows)})
-        match = re.fullmatch(r"/api/v1/books/([1-5])/thumbnail", parsed.path)
+        match = re.fullmatch(r"/api/v1/books/([0-9]+)/thumbnail", parsed.path)
         if match and not BOOK_DIR:
             data = COMIC_IMAGES[int(match[1]) % len(COMIC_IMAGES)]
             self.send_response(200)
@@ -216,8 +222,13 @@ class Handler(BaseHTTPRequestHandler):
             rows = [row for row in ANNOTATIONS.values() if row['bookId'] == int(match[1]) and row['jumpFileId'] == file_id]
             rows.sort(key=lambda row: row['id'], reverse=True)
             return self.send_json({'items': rows[(page-1)*size:page*size], 'total': len(rows), 'page': page})
-        match=re.fullmatch(r"/api/v1/books/([2-5])",self.path)
-        if match: return self.send_json(DOCUMENTS[int(match[1])])
+        match=re.fullmatch(r"/api/v1/books/([1-5])",self.path)
+        if match:
+            if int(match[1]) == 1:
+                book = dict(MANIFEST['book'], authors=[{'name': name} for name in MANIFEST['book']['authors']], files=[{'id': asset['fileId'], 'format': asset['format'], 'filename': f'Part {asset["sequence"]+1}.mp3', 'sizeBytes': asset['sizeBytes']} for asset in ASSETS])
+            else:
+                book = DOCUMENTS[int(match[1])]
+            return self.send_json(dict(book, description='<p>A synthetic journey through a quiet observatory.</p><p>Explore the next chapter.</p><script>throw new Error("blocked")</script>', subtitle='Synthetic verification edition', seriesName='Quiet Orbit', seriesIndex='1', publisher='Orbit Test Press', publishedYear=2026, language='en', pageCount=120, isbn13='9780000000000', rating=4.5, genres=['Fiction', 'Adventure'], tags=['Synthetic'], collections=[{'id':1,'name':'Test shelf'}], readStatus={'status':'reading'}, libraryName='Test library'))
         match=re.fullmatch(r"/api/v1/books/files/(10[1-5])/progress",self.path)
         if match: return self.send_json(READING_PROGRESS.get(int(match[1]),{"percentage":0,"cfi":None,"pageNumber":None,"textUpdatedAt":None}))
         match=re.fullmatch(r"/api/v1/cbz/files/(104|105)/pages(?:/([0-2]))?",self.path)
@@ -331,8 +342,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1", help="Bind address. Use a trusted LAN interface only for emulator access.")
     parser.add_argument("--port", type=int, default=4890)
+    parser.add_argument("--catalog-size", type=int, default=0, help="Additional synthetic books per format for scrolling tests")
     parser.add_argument("--book-dir", type=pathlib.Path, help="Private fixture directory with manifest.json, cover.jpg, and <fileId>.<format> audio files")
     args = parser.parse_args()
+    if not 0 <= args.catalog_size <= 10000: parser.error("catalog-size must be between 0 and 10000")
+    CATALOG_SIZE = args.catalog_size
     if args.book_dir:
         BOOK_DIR = args.book_dir.resolve()
         MANIFEST = json.loads((BOOK_DIR / "manifest.json").read_text())

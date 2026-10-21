@@ -132,6 +132,34 @@ class EbookStorage(context: Context, scope: String) {
                 .toList()
         }
 
+    fun filesForBook(bookId: Int): List<SavedEbook> =
+        synchronized(lock) {
+            root
+                .listFiles()
+                .orEmpty()
+                .asSequence()
+                .filter { it.isDirectory }
+                .mapNotNull { it.name.toIntOrNull()?.let { id -> book(id) } }
+                .filter { it.bookId == bookId && ready(it.file) }
+                .toList()
+        }
+
+    fun shelfBooks(page: Int): List<SavedEbook> =
+        synchronized(lock) {
+            root
+                .listFiles()
+                .orEmpty()
+                .asSequence()
+                .filter { it.isDirectory }
+                .sortedBy { it.name.toIntOrNull() ?: Int.MAX_VALUE }
+                .mapNotNull { it.name.toIntOrNull()?.let { id -> book(id) } }
+                .filter { ready(it.file) }
+                .distinctBy { it.bookId }
+                .drop((page - 1) * 30)
+                .take(30)
+                .toList()
+        }
+
     fun recentlyRead(): List<SavedEbook> =
         synchronized(lock) {
             root

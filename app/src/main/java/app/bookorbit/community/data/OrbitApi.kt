@@ -148,7 +148,7 @@ class OrbitApi(val sessions: SessionStore) {
         return decode(request("dashboard/scrollers/$type?limit=10", expectedScope = owner))
     }
 
-    fun books(page: Int, query: String, ebooks: Boolean = false): BooksPage {
+    fun books(page: Int, query: String, ebooks: Boolean = false, owner: String? = null): BooksPage {
         require(page > 0)
         return decode(
             request(
@@ -220,6 +220,7 @@ class OrbitApi(val sessions: SessionStore) {
                         )
                     }
                     .toString(),
+                expectedScope = owner,
             )
         )
     }

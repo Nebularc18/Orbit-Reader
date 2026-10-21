@@ -35,6 +35,29 @@ class OrbitApiTest {
     }
 
     @Test
+    fun `book information parses web metadata while catalog calls enforce account scope`() {
+        val owner = store.read()!!.scope
+        server.enqueue(
+            MockResponse()
+                .setBody(
+                    """{"id":8,"title":"Book","description":"<p>Synopsis</p>","subtitle":"Subtitle","authors":[{"id":1,"name":"Writer"}],"seriesName":"A Series","seriesIndex":"2.5","publisher":"Publisher","publishedYear":2026,"language":"en","pageCount":200,"rating":4.5,"genres":["Fiction"],"tags":["Favorite"],"collections":[{"id":2,"name":"Shelf"}],"readStatus":{"status":"reading"},"files":[]}"""
+                )
+        )
+        val book = api.ebookDetail(8, owner)
+        assertEquals("2.5", book.seriesIndex)
+        assertEquals(200, book.pageCount)
+        assertEquals("reading", book.readStatus?.status)
+        assertEquals("Shelf", book.collections.single().name)
+        assertEquals("/books/api/v1/books/8", server.takeRequest().path)
+        try {
+            api.books(1, "", owner = "another-account")
+            fail("Expected scope rejection")
+        } catch (error: ApiFailure) {
+            assertEquals(401, error.status)
+        }
+    }
+
+    @Test
     fun `dashboard requests bounded shelves using the current account scope`() {
         val owner = store.read()!!.scope
         listOf("continue-listening", "continue-reading", "up-next-in-series").forEach { type ->

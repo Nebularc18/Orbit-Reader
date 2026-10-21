@@ -3,20 +3,19 @@ package app.bookorbit.community.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.paging.*
 import androidx.work.WorkManager
 import app.bookorbit.community.OrbitApplication
 import app.bookorbit.community.data.*
 import app.bookorbit.community.reader.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.withLock
 
 data class EbookShelfState(
-    val books: List<BookCard> = emptyList(),
-    val total: Int = 0,
-    val page: Int = 1,
     val query: String = "",
     val offline: Boolean = false,
     val busy: Boolean = false,
@@ -25,7 +24,6 @@ data class EbookShelfState(
     val options: Boolean = false,
     val readyFiles: Set<Int> = emptySet(),
     val readyToRead: Boolean = false,
-    val saved: List<SavedEbook> = emptyList(),
     val preparing: SavedEbook? = null,
     val workId: String? = null,
 )
@@ -35,78 +33,56 @@ class EbookLibraryViewModel(application: Application) : AndroidViewModel(applica
     val owner = app.sessions.read()?.scope ?: ""
     private val mutable = MutableStateFlow(EbookShelfState())
     val state = mutable.asStateFlow()
-    private var listing: Job? = null
+    private val refresh = MutableStateFlow(0)
     private var selection: Job? = null
 
-    init {
-        browse()
-    }
+    @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
+    val catalog =
+        combine(mutable.map { it.query to it.offline }.distinctUntilChanged(), refresh) {
+                key,
+                generation ->
+                key to generation
+            }
+            .debounce(300)
+            .flatMapLatest { (key, _) ->
+                bookPager { page ->
+                        withContext(Dispatchers.IO) {
+                            checkAccount()
+                            val result =
+                                if (!key.second)
+                                    app.api.books(page, key.first, ebooks = true, owner = owner)
+                                else {
+                                    val saved = EbookStorage(app, owner).shelfBooks(page)
+                                    BooksPage(
+                                        saved.map { BookCard(it.bookId, it.title, it.authors) },
+                                        -1,
+                                        page,
+                                        30,
+                                    )
+                                }
+                            checkAccount()
+                            result
+                        }
+                    }
+                    .flow
+            }
+            .cachedIn(viewModelScope)
 
     private fun checkAccount() {
         check(app.sessions.read()?.scope == owner)
     }
 
     fun search(query: String) {
-        mutable.update { it.copy(query = query, page = 1) }
-        browse(true)
-    }
-
-    fun page(delta: Int) {
-        mutable.update { it.copy(page = (it.page + delta).coerceAtLeast(1)) }
-        browse()
+        mutable.update { it.copy(query = query, error = null) }
     }
 
     fun offline(value: Boolean) {
-        mutable.update { it.copy(offline = value, page = 1, query = "", books = emptyList()) }
-        browse()
+        mutable.update { it.copy(offline = value, query = "", error = null) }
     }
 
-    fun browse(debounce: Boolean = false) {
-        listing?.cancel()
-        listing =
-            viewModelScope.launch {
-                if (debounce) delay(350)
-                val snapshot = mutable.value
-                mutable.update { it.copy(busy = true, error = null) }
-                try {
-                    val (books, saved) =
-                        withContext(Dispatchers.IO) {
-                            checkAccount()
-                            if (snapshot.offline) {
-                                val saved = EbookStorage(app, owner).books(snapshot.page)
-                                BooksPage(
-                                    saved
-                                        .map { BookCard(it.bookId, it.title, it.authors) }
-                                        .distinctBy { it.id },
-                                    -1,
-                                    snapshot.page,
-                                    30,
-                                ) to saved
-                            } else
-                                app.api.books(snapshot.page, snapshot.query, ebooks = true) to
-                                    emptyList()
-                        }
-                    checkAccount()
-                    mutable.update {
-                        it.copy(
-                            books = books.items,
-                            saved = saved,
-                            total = books.total,
-                            busy = false,
-                        )
-                    }
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: Exception) {
-                    mutable.update {
-                        it.copy(
-                            busy = false,
-                            error =
-                                "Could not load ebooks. Check your connection or open On device.",
-                        )
-                    }
-                }
-            }
+    fun browse() {
+        mutable.update { it.copy(error = null) }
+        refresh.value += 1
     }
 
     fun select(bookId: Int, openDirectly: Boolean = false) {
@@ -119,17 +95,22 @@ class EbookLibraryViewModel(application: Application) : AndroidViewModel(applica
                         withContext(Dispatchers.IO) {
                             checkAccount()
                             if (mutable.value.offline) {
-                                val saved = mutable.value.saved.filter { it.bookId == bookId }
+                                val saved = EbookStorage(app, owner).filesForBook(bookId)
                                 val first = saved.first()
-                                EbookDetail(
-                                    bookId,
-                                    first.title,
-                                    first.authors.map(::EbookAuthor),
-                                    saved.map { it.file },
-                                )
+                                BookDetailsStorage(app, owner)
+                                    .read(bookId)
+                                    ?.copy(files = saved.map { it.file })
+                                    ?: EbookDetail(
+                                        bookId,
+                                        first.title,
+                                        first.authors.map(::EbookAuthor),
+                                        saved.map { it.file },
+                                    )
                             } else {
                                 try {
-                                    app.api.ebookDetail(bookId, owner)
+                                    app.api.ebookDetail(bookId, owner).also {
+                                        runCatching { BookDetailsStorage(app, owner).save(it) }
+                                    }
                                 } catch (error: ApiFailure) {
                                     throw error
                                 } catch (error: java.io.IOException) {

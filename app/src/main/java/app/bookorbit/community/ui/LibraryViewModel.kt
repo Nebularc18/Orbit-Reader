@@ -3,12 +3,14 @@ package app.bookorbit.community.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.paging.*
 import androidx.work.WorkManager
 import app.bookorbit.community.OrbitApplication
 import app.bookorbit.community.data.*
 import app.bookorbit.community.download.enqueueDownload
 import java.io.IOException
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -18,14 +20,14 @@ data class LibraryState(
     val session: Session? = null,
     val busy: Boolean = false,
     val error: String? = null,
-    val books: BooksPage? = null,
     val query: String = "",
-    val page: Int = 1,
     val offline: Boolean = false,
     val selected: AudioManifest? = null,
+    val details: EbookDetail? = null,
+    val detailsBusy: Boolean = false,
+    val detailsError: String? = null,
     val downloaded: Boolean = false,
     val wifiOnly: Boolean = true,
-    val downloads: List<StoredDownload> = emptyList(),
     val usedBytes: Long = 0,
     val availableBytes: Long = 0,
     val selectedBytes: Long = 0,
@@ -35,12 +37,52 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     private val app = application as OrbitApplication
     private val mutable = MutableStateFlow(LibraryState(session = app.sessions.read()))
     val state = mutable.asStateFlow()
-    private var listingJob: Job? = null
+    private val refresh = MutableStateFlow(0)
     private var detailJob: Job? = null
-
-    init {
-        if (mutable.value.session != null) browse()
-    }
+    @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
+    val catalog =
+        combine(
+                mutable
+                    .map { Triple(it.session?.scope, it.query, it.offline) }
+                    .distinctUntilChanged(),
+                refresh,
+            ) { key, generation ->
+                key to generation
+            }
+            .debounce(300)
+            .flatMapLatest { (key, _) ->
+                val owner = key.first
+                if (owner == null) flowOf(PagingData.empty())
+                else
+                    bookPager { page ->
+                            withContext(Dispatchers.IO) {
+                                if (app.sessions.read()?.scope != owner) throw ApiFailure(401)
+                                val result =
+                                    if (!key.third) app.api.books(page, key.second, owner = owner)
+                                    else {
+                                        val downloads = AudioStorage(app, owner).downloads(page)
+                                        BooksPage(
+                                            downloads.map {
+                                                BookCard(
+                                                    it.manifest.book.id,
+                                                    it.manifest.book.title,
+                                                    it.manifest.book.authors,
+                                                    localDownload =
+                                                        LocalDownloadStatus(it.bytes, it.complete),
+                                                )
+                                            },
+                                            -1,
+                                            page,
+                                            30,
+                                        )
+                                    }
+                                if (app.sessions.read()?.scope != owner) throw ApiFailure(401)
+                                result
+                            }
+                        }
+                        .flow
+            }
+            .cachedIn(viewModelScope)
 
     fun login(server: String, username: String, password: String) {
         if (mutable.value.busy) return
@@ -60,7 +102,6 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun logout(onStopped: () -> Unit) {
-        listingJob?.cancel()
         detailJob?.cancel()
         onStopped()
         val session = app.sessions.read() ?: return
@@ -77,89 +118,109 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun search(value: String) {
-        mutable.update { it.copy(query = value, page = 1) }
-        browse(debounce = true)
+        mutable.update { it.copy(query = value, error = null) }
     }
 
     fun setOffline(value: Boolean) {
-        mutable.update { it.copy(offline = value, query = "", page = 1, books = null) }
-        browse()
+        mutable.update { it.copy(offline = value, query = "", error = null) }
+        refreshDownloaded()
     }
 
-    fun page(delta: Int) {
-        mutable.update { it.copy(page = (it.page + delta).coerceAtLeast(1)) }
-        browse()
-    }
-
-    fun browse(debounce: Boolean = false) {
-        listingJob?.cancel()
-        listingJob =
-            viewModelScope.launch {
-                if (debounce) delay(350)
-                val snapshot = mutable.value
-                val account = snapshot.session ?: return@launch
-                mutable.update { it.copy(busy = true, error = null) }
-                try {
-                    val result =
-                        withContext(Dispatchers.IO) {
-                            if (!snapshot.offline) app.api.books(snapshot.page, snapshot.query)
-                            else {
-                                val stored =
-                                    AudioStorage(app, account.scope).downloads(snapshot.page).map {
-                                        it.manifest
-                                    }
-                                BooksPage(
-                                    stored.map {
-                                        BookCard(it.book.id, it.book.title, it.book.authors)
-                                    },
-                                    -1,
-                                    snapshot.page,
-                                    30,
-                                )
-                            }
-                        }
-                    mutable.update { it.copy(books = result, busy = false) }
-                    refreshDownloads()
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (error: Exception) {
-                    mutable.update { it.copy(busy = false, error = friendly(error)) }
-                }
-            }
+    fun browse() {
+        mutable.update { it.copy(error = null) }
+        refresh.value += 1
+        refreshDownloaded()
     }
 
     fun select(bookId: Int) {
         detailJob?.cancel()
+        val account = mutable.value.session ?: return
         detailJob =
             viewModelScope.launch {
-                mutable.update { it.copy(busy = true, error = null) }
+                mutable.update {
+                    it.copy(
+                        busy = true,
+                        error = null,
+                        selected = null,
+                        details = null,
+                        detailsBusy = false,
+                        detailsError = null,
+                    )
+                }
                 try {
-                    val storage = AudioStorage(app, mutable.value.session!!.scope)
-                    val manifest =
+                    val storage = AudioStorage(app, account.scope)
+                    val loaded =
                         withContext(Dispatchers.IO) {
-                            if (mutable.value.offline)
-                                storage.manifest(bookId) ?: throw IOException()
-                            else app.api.manifest(bookId)
+                            if (app.sessions.read()?.scope != account.scope) throw ApiFailure(401)
+                            val manifest =
+                                try {
+                                    app.api.manifest(bookId, account.scope)
+                                } catch (error: ApiFailure) {
+                                    throw error
+                                } catch (error: IOException) {
+                                    storage.manifest(bookId) ?: throw error
+                                }
+                            Triple(
+                                manifest,
+                                storage.downloaded(manifest),
+                                storage.audioBytes(bookId),
+                            )
                         }
+                    val cachedDetails =
+                        withContext(Dispatchers.IO) {
+                            BookDetailsStorage(app, account.scope).read(bookId)
+                        }
+                    if (app.sessions.read()?.scope != account.scope) return@launch
                     mutable.update {
                         it.copy(
-                            selected = manifest,
-                            downloaded = storage.downloaded(manifest),
-                            selectedBytes = storage.audioBytes(bookId),
+                            selected = loaded.first,
+                            details = cachedDetails,
+                            downloaded = loaded.second,
+                            selectedBytes = loaded.third,
                             busy = false,
+                            detailsBusy = true,
                         )
                     }
-                    refreshDownloads()
+                    val details =
+                        withContext(Dispatchers.IO) {
+                            val cache = BookDetailsStorage(app, account.scope)
+                            try {
+                                app.api.ebookDetail(bookId, account.scope).also {
+                                    runCatching { cache.save(it) }
+                                } to false
+                            } catch (error: CancellationException) {
+                                throw error
+                            } catch (_: IOException) {
+                                cache.read(bookId) to true
+                            }
+                        }
+                    mutable.update {
+                        if (it.session?.scope == account.scope && it.selected?.book?.id == bookId)
+                            it.copy(
+                                details = details.first,
+                                detailsBusy = false,
+                                detailsError =
+                                    if (details.second)
+                                        "Could not refresh book information. Check your connection and reopen this book to retry."
+                                    else null,
+                            )
+                        else it
+                    }
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
-                    mutable.update { it.copy(busy = false, error = friendly(error)) }
+                    mutable.update {
+                        it.copy(busy = false, detailsBusy = false, error = friendly(error))
+                    }
                 }
             }
     }
 
     fun closeDetail() {
-        mutable.update { it.copy(selected = null) }
+        detailJob?.cancel()
+        mutable.update {
+            it.copy(selected = null, details = null, detailsBusy = false, detailsError = null)
+        }
     }
 
     fun wifiOnly(value: Boolean) {
@@ -213,7 +274,6 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         if (!snapshot.offline && snapshot.selected == null) return
         withContext(Dispatchers.IO) {
             val storage = AudioStorage(app, account.scope)
-            val downloads = if (snapshot.offline) storage.downloads(snapshot.page) else emptyList()
             val used = storage.usedBytes()
             val available = storage.availableBytes()
             val complete = snapshot.selected?.let(storage::downloaded) ?: false
@@ -221,33 +281,16 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             mutable.update {
                 if (
                     it.session?.scope != account.scope ||
-                        it.page != snapshot.page ||
                         it.offline != snapshot.offline ||
                         it.selected != snapshot.selected
                 )
                     it
                 else
                     it.copy(
-                        downloads = downloads,
                         usedBytes = used,
                         availableBytes = available,
                         downloaded = complete,
                         selectedBytes = selectedBytes,
-                        books =
-                            if (snapshot.offline)
-                                BooksPage(
-                                    downloads.map { entry ->
-                                        BookCard(
-                                            entry.manifest.book.id,
-                                            entry.manifest.book.title,
-                                            entry.manifest.book.authors,
-                                        )
-                                    },
-                                    -1,
-                                    snapshot.page,
-                                    30,
-                                )
-                            else it.books,
                     )
             }
         }

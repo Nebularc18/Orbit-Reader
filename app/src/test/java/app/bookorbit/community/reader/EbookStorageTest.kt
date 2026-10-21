@@ -23,6 +23,23 @@ class EbookStorageTest {
     private val book = SavedEbook(2, "Sample", listOf("Writer"), file)
 
     @Test
+    fun `offline shelf pages distinct books and preserves all editions for opening`() {
+        for (id in 1..35) for (edition in 0..1) {
+            val entry = SavedEbook(id, "Book $id", emptyList(), file.copy(id = id * 10 + edition))
+            storage.saveBook(entry)
+            storage.content(entry.file).writeBytes(byteArrayOf(1))
+        }
+        assertEquals(30, storage.shelfBooks(1).size)
+        assertEquals(5, storage.shelfBooks(2).size)
+        assertEquals(
+            35,
+            (storage.shelfBooks(1) + storage.shelfBooks(2)).map { it.bookId }.distinct().size,
+        )
+        assertEquals(2, storage.filesForBook(31).size)
+        assertTrue(storage.shelfBooks(3).isEmpty())
+    }
+
+    @Test
     fun `recent reading requires matching progress and ready content and stays account scoped`() {
         storage.saveBook(book)
         storage.content(file).writeBytes(byteArrayOf(1))

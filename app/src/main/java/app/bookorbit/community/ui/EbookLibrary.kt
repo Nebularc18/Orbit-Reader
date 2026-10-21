@@ -7,6 +7,9 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.*
@@ -17,6 +20,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.paging.LoadState
+import androidx.paging.compose.collectAsLazyPagingItems
+import androidx.paging.compose.itemKey
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import app.bookorbit.community.OrbitApplication
@@ -24,7 +30,7 @@ import app.bookorbit.community.data.Session
 import app.bookorbit.community.reader.EpubReaderActivity
 import app.bookorbit.community.reader.PageReaderActivity
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun EbookLibrary(
     app: OrbitApplication,
@@ -35,6 +41,9 @@ fun EbookLibrary(
 ) {
     val model: EbookLibraryViewModel = viewModel(key = "ebooks-${account.scope}")
     val state by model.state.collectAsStateWithLifecycle()
+    val catalog = model.catalog.collectAsLazyPagingItems()
+    val catalogScroll = rememberLazyListState()
+    LaunchedEffect(state.query, state.offline) { catalogScroll.scrollToItem(0) }
     LaunchedEffect(openBookId) {
         openBookId?.let {
             model.select(it, openDirectly = true)
@@ -109,7 +118,11 @@ fun EbookLibrary(
                 modifier = Modifier.padding(vertical = 12.dp),
             )
         }
-        if (state.books.isEmpty() && !state.busy)
+        if (
+            catalog.itemCount == 0 &&
+                catalog.loadState.refresh is LoadState.NotLoading &&
+                !state.busy
+        )
             Text(
                 if (state.offline)
                     "No ebooks saved yet. Open a book from Library to keep a copy here."
@@ -118,10 +131,14 @@ fun EbookLibrary(
             )
         LazyColumn(
             Modifier.weight(1f),
+            state = catalogScroll,
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(vertical = 16.dp),
         ) {
-            items(state.books, key = { it.id }) { book ->
+            catalogLoading(catalog.loadState.refresh, catalog::retry, "refresh")
+            catalogLoading(catalog.loadState.prepend, catalog::retry, "prepend")
+            items(count = catalog.itemCount, key = catalog.itemKey { it.id }) { index ->
+                val book = catalog[index] ?: return@items
                 Card(
                     Modifier.fillMaxWidth()
                         .combinedClickable(
@@ -153,77 +170,81 @@ fun EbookLibrary(
                     }
                 }
             }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = { model.page(-1) }, enabled = state.page > 1 && !state.busy) {
-                Text("Previous ebooks")
-            }
-            Text("Page ${state.page}", Modifier.align(Alignment.CenterVertically))
-            TextButton(
-                onClick = { model.page(1) },
-                enabled =
-                    !state.busy &&
-                        (if (state.offline) state.saved.size == 30
-                        else state.page * 30 < state.total),
-            ) {
-                Text("Next ebooks")
-            }
+            catalogLoading(catalog.loadState.append, catalog::retry, "append")
         }
     }
     state.selected
         ?.takeIf { state.options || preparing != null }
         ?.let { book ->
-            AlertDialog(
+            ModalBottomSheet(
+                modifier = Modifier.fillMaxHeight(0.95f),
                 onDismissRequest = model::closeDetail,
-                title = { Text(book.title ?: "Untitled") },
-                text = {
-                    Column {
-                        Text(
-                            "Opening a book saves a copy for offline reading. Use Sync in the reader to share progress."
-                        )
-                        if (preparing == null)
-                            book.files
-                                .filter { it.supported }
-                                .forEach { file ->
-                                    TextButton(onClick = { model.prepare(file) }) {
-                                        Text(
-                                            "Read ${file.filename ?: file.format?.uppercase() ?: "EPUB"}"
-                                        )
-                                    }
-                                    if (file.id in state.readyFiles)
-                                        TextButton(onClick = { model.removed(file) }) {
-                                            Text("Remove ${file.filename ?: "ebook"} from device")
-                                        }
-                                }
-                        if (preparing != null) {
-                            when (current?.state) {
-                                WorkInfo.State.FAILED,
-                                WorkInfo.State.CANCELLED -> {
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            ) {
+                Column(
+                    Modifier.fillMaxWidth()
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 24.dp)
+                        .padding(bottom = 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(book.title ?: "Untitled", style = MaterialTheme.typography.headlineMedium)
+                    BookCover(
+                        app,
+                        account,
+                        book.id,
+                        book.coverVersion,
+                        Modifier.size(120.dp, 160.dp),
+                        ebook = true,
+                    )
+                    Text(book.authors.joinToString(", ") { it.name })
+                    Text(
+                        "Opening a book saves a copy for offline reading. Use Sync in the reader to share progress."
+                    )
+                    if (preparing == null)
+                        book.files
+                            .filter { it.supported }
+                            .forEach { file ->
+                                TextButton(onClick = { model.prepare(file) }) {
                                     Text(
-                                        current.outputData.getString("error")
-                                            ?: "Download stopped. Try again.",
-                                        color = MaterialTheme.colorScheme.error,
-                                    )
-                                    TextButton(onClick = { model.prepare(preparing.file) }) {
-                                        Text("Retry ebook")
-                                    }
-                                }
-                                else -> {
-                                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                                    val bytes = current?.progress?.getLong("bytes", 0) ?: 0
-                                    val total = current?.progress?.getLong("total", -1) ?: -1
-                                    Text(
-                                        "Preparing ebook · ${Formatter.formatShortFileSize(app, bytes)}" +
-                                            if (total > 0)
-                                                " / ${Formatter.formatShortFileSize(app, total)}"
-                                            else ""
+                                        "Read ${file.filename ?: file.format?.uppercase() ?: "EPUB"}"
                                     )
                                 }
+                                if (file.id in state.readyFiles)
+                                    TextButton(onClick = { model.removed(file) }) {
+                                        Text("Remove ${file.filename ?: "ebook"} from device")
+                                    }
+                            }
+                    if (preparing != null) {
+                        when (current?.state) {
+                            WorkInfo.State.FAILED,
+                            WorkInfo.State.CANCELLED -> {
+                                Text(
+                                    current.outputData.getString("error")
+                                        ?: "Download stopped. Try again.",
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                                TextButton(onClick = { model.prepare(preparing.file) }) {
+                                    Text("Retry ebook")
+                                }
+                            }
+                            else -> {
+                                LinearProgressIndicator(Modifier.fillMaxWidth())
+                                val bytes = current?.progress?.getLong("bytes", 0) ?: 0
+                                val total = current?.progress?.getLong("total", -1) ?: -1
+                                Text(
+                                    "Preparing ebook · ${Formatter.formatShortFileSize(app, bytes)}" +
+                                        if (total > 0)
+                                            " / ${Formatter.formatShortFileSize(app, total)}"
+                                        else ""
+                                )
                             }
                         }
                     }
-                },
-                confirmButton = { TextButton(onClick = model::closeDetail) { Text("Close") } },
-            )
+                    BookInformation(book)
+                    TextButton(onClick = model::closeDetail) { Text("Close") }
+                }
+            }
         }
 }

@@ -29,6 +29,8 @@ fun Dashboard(
     modifier: Modifier = Modifier,
     onListen: (Int) -> Unit,
     onRead: (Int) -> Unit,
+    opening: Boolean = false,
+    openError: String? = null,
 ) {
     val model: DashboardViewModel = viewModel(key = "dashboard-${account.scope}")
     val state by model.state.collectAsStateWithLifecycle()
@@ -66,7 +68,15 @@ fun Dashboard(
                     Icon(Icons.Rounded.Refresh, "Refresh dashboard")
                 }
             }
-            if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 12.dp))
+            openError?.let {
+                Text(
+                    it,
+                    Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            if (state.loading || opening)
+                LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 12.dp))
         }
         items(state.rows, key = { it.section }) { row ->
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
