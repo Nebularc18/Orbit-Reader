@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local synthetic audiobook fixture for emulator smoke verification."""
+"""Local synthetic audiobook and EPUB fixture for emulator smoke verification."""
 
 import argparse
 import io
@@ -10,6 +10,11 @@ import re
 import struct
 import threading
 import wave
+import zipfile
+import zlib
+import binascii
+import datetime
+from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -21,6 +26,71 @@ def audio(frequency):
         output.setframerate(8000)
         output.writeframes(b"".join(struct.pack("<h", int(800 * math.sin(2 * math.pi * frequency * i / 8000))) for i in range(20 * 8000)))
     return buffer.getvalue()
+
+
+def ebook():
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        archive.writestr("META-INF/container.xml", '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="EPUB/package.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
+        archive.writestr("EPUB/package.opf", '''<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">orbit-synthetic-ebook</dc:identifier><dc:title>A Quiet Orbit</dc:title><dc:language>en</dc:language><dc:creator>Orbit Test Reader</dc:creator><meta property="dcterms:modified">2026-10-20T00:00:00Z</meta></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="one" href="one.xhtml" media-type="application/xhtml+xml"/><item id="two" href="two.xhtml" media-type="application/xhtml+xml"/><item id="image" href="orbit.svg" media-type="image/svg+xml"/></manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>''')
+        archive.writestr("EPUB/nav.xhtml", '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="one.xhtml">Departure</a></li><li><a href="two.xhtml#arrival">Arrival</a></li></ol></nav></body></html>')
+        for name, title in [("one", "Departure"), ("two", "Arrival")]:
+            paragraphs = "".join(f'<p id="p{n}">Passage {n + 1}. The little observatory watched a quiet moon rise above the hills. This synthetic story tests page turns, text size, images, and a reading position that survives closing the app.</p>' for n in range(36))
+            archive.writestr(f"EPUB/{name}.xhtml", f'<html xmlns="http://www.w3.org/1999/xhtml"><head><title>{title}</title></head><body><h1 id="arrival">{title}</h1><img src="orbit.svg" alt="A small orbit diagram"/>{paragraphs}</body></html>')
+        archive.writestr("EPUB/orbit.svg", '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="120" viewBox="0 0 320 120"><rect width="320" height="120" fill="#e2ebdf"/><ellipse cx="160" cy="60" rx="115" ry="35" fill="none" stroke="#304f47" stroke-width="3"/><circle cx="160" cy="60" r="13" fill="#765b35"/></svg>')
+    return buffer.getvalue()
+
+
+def pdf():
+    objects = []
+    def obj(value):
+        objects.append(value.encode())
+    obj('<< /Type /Catalog /Pages 2 0 R >>')
+    obj('<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 >>')
+    for page in range(3):
+        obj(f'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Resources << /Font << /F1 9 0 R >> >> /Contents {4+page*2} 0 R >>')
+        text = f'BT /F1 28 Tf 60 680 Td (Orbit PDF page {page+1}) Tj 0 -80 Td /F1 16 Tf (Synthetic offline reading test.) Tj ET'
+        obj(f'<< /Length {len(text)} >>\nstream\n{text}\nendstream')
+    obj('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
+    data=bytearray(b'%PDF-1.4\n'); offsets=[0]
+    for index, value in enumerate(objects,1):
+        offsets.append(len(data)); data.extend(f'{index} 0 obj\n'.encode()+value+b'\nendobj\n')
+    xref=len(data); data.extend(f'xref\n0 {len(offsets)}\n0000000000 65535 f \n'.encode())
+    for offset in offsets[1:]: data.extend(f'{offset:010d} 00000 n \n'.encode())
+    data.extend(f'trailer << /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF'.encode())
+    return bytes(data)
+
+
+def comic_image(page):
+    width,height=600,800
+    colors=[(85,130,105),(130,95,155),(180,125,65)]
+    color=colors[page]
+    pixels=b''.join(b'\x00'+b''.join(bytes(color if 50<x<550 and 100<y<650 and (x//100+page)%3 else (245,240,225)) for x in range(width)) for y in range(height))
+    def chunk(name,value): return struct.pack('>I',len(value))+name+value+struct.pack('>I',binascii.crc32(name+value)&0xffffffff)
+    return b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',width,height,8,2,0,0,0))+chunk(b'IDAT',zlib.compress(pixels))+chunk(b'IEND',b'')
+
+
+PDF=pdf()
+COMIC_IMAGES=[comic_image(i) for i in range(3)]
+comic_buffer=io.BytesIO()
+with zipfile.ZipFile(comic_buffer,'w') as archive:
+    for page in [2,1,0]: archive.writestr(f'page{[1,2,10][page]}.png',COMIC_IMAGES[page])
+CBZ=comic_buffer.getvalue()
+READING_PROGRESS={}
+
+
+EPUB = ebook()
+EBOOK_FILE = {"id": 101, "format": "epub", "filename": "A Quiet Orbit.epub", "role": "main", "sizeBytes": len(EPUB), "fileHash": "orbit-epub-v1"}
+EBOOK = {"id": 2, "title": "A Quiet Orbit · Reading Test", "authors": [{"name": "Orbit Test Reader"}], "files": [EBOOK_FILE]}
+
+PDF_BOOK={"id":3,"title":"Orbit PDF Test","authors":[{"name":"Orbit Test Reader"}],"files":[{"id":102,"format":"pdf","filename":"Orbit.pdf","sizeBytes":len(PDF),"fileHash":"pdf-v1"}]}
+COMIC_BOOK={"id":4,"title":"Orbit Comic Test","authors":[{"name":"Orbit Test Reader"}],"files":[{"id":103,"format":"cbz","filename":"Orbit.cbz","sizeBytes":len(CBZ),"fileHash":"cbz-v1"}]}
+CONVERTED_BOOK={"id":5,"title":"Orbit Converted Comic Test","authors":[{"name":"Orbit Test Reader"}],"files":[{"id":104,"format":"cbr","filename":"Orbit.cbr","fileHash":"cbr-v1"},{"id":105,"format":"cb7","filename":"Orbit.cb7","fileHash":"cb7-v1"}]}
+DOCUMENTS={2:EBOOK,3:PDF_BOOK,4:COMIC_BOOK,5:CONVERTED_BOOK}
+ANNOTATIONS = {}
+NEXT_ANNOTATION = 1
 
 
 AUDIO = [audio(220), audio(330)]
@@ -67,16 +137,101 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({})
         if not self.authorized():
             return
+        match = re.fullmatch(r"/api/v1/books/([2-5])/annotations", self.path)
+        if match:
+            global NEXT_ANNOTATION
+            allowed = {"bookFileId", "text", "cfi", "pdf", "note", "color", "style", "chapterTitle"}
+            if set(data) - allowed or not data.get("text") or bool(data.get("cfi")) == bool(data.get("pdf")):
+                return self.send_json({}, 400)
+            row = {"id": NEXT_ANNOTATION, "bookId": int(match[1]), "jumpFileId": data['bookFileId'], "text": data['text'], "cfi": data.get('cfi'), "pdf": data.get('pdf'), "note": data.get('note'), "color": data.get('color', '#ffff00'), "style": data.get('style', 'highlight')}
+            ANNOTATIONS[NEXT_ANNOTATION] = row
+            NEXT_ANNOTATION += 1
+            return self.send_json(row, 201)
         if self.path == "/api/v1/books/query":
-            book = MANIFEST["book"]
-            matches = data.get("q", "").casefold() in (book["title"] + " " + " ".join(book["authors"])).casefold()
-            items = [{"id": book["id"], "title": book["title"], "authors": book["authors"], "coverVersion": MANIFEST["revision"]}] if matches else []
+            formats = next((rule.get("value", []) for rule in data.get("filter", {}).get("rules", []) if rule.get("field") == "format"), [])
+            books = []
+            if not formats or any(value in formats for value in ["mp3", "m4b", "m4a"]):
+                books.append(MANIFEST["book"])
+            if not formats or "epub" in formats or "kepub" in formats:
+                books.append({"id": 2, "title": EBOOK["title"], "authors": ["Orbit Test Reader"]})
+            for entry in [PDF_BOOK, COMIC_BOOK, CONVERTED_BOOK]:
+                if not formats or any(file['format'] in formats for file in entry['files']):
+                    books.append({"id":entry['id'],"title":entry['title'],"authors":["Orbit Test Reader"]})
+            query = data.get("q", "").casefold()
+            items = [{"id": book["id"], "title": book["title"], "authors": book["authors"], "coverVersion": "fixture"} for book in books if query in (book["title"] + " " + " ".join(book["authors"])).casefold()]
             return self.send_json({"items": items if data["pagination"]["page"] == 0 else [], "total": len(items), "page": data["pagination"]["page"], "size": data["pagination"]["size"]})
+        match=re.fullmatch(r"/api/v1/books/files/(10[1-5])/progress",self.path)
+        if match:
+            if set(data)-{"percentage","pageNumber","cfi","source"} or not 0<=data.get("percentage",-1)<=100:
+                return self.send_json({},400)
+            READING_PROGRESS[int(match[1])] = {"percentage":data['percentage'],"pageNumber":data.get('pageNumber'),"cfi":data.get('cfi'),"textUpdatedAt":datetime.datetime.now(datetime.timezone.utc).isoformat()}
+            return self.send_json({})
         self.send_json({}, 404)
+
+    def annotation_mutation(self, delete=False):
+        if not self.authorized(): return
+        match = re.fullmatch(r"/api/v1/books/([2-5])/annotations/([0-9]+)", self.path)
+        row = ANNOTATIONS.get(int(match[2])) if match else None
+        if not row or row['bookId'] != int(match[1]): return self.send_json({}, 404)
+        if delete:
+            del ANNOTATIONS[row['id']]
+            return self.send_json({}, 204)
+        data = self.body()
+        if set(data) - {'note'}: return self.send_json({}, 400)
+        row['note'] = data.get('note')
+        return self.send_json(row)
+
+    def do_PATCH(self): self.annotation_mutation()
+    def do_DELETE(self): self.annotation_mutation(delete=True)
 
     def do_GET(self):
         if not self.authorized():
             return
+        parsed = urlparse(self.path)
+        match = re.fullmatch(r"/api/v1/dashboard/scrollers/(continue-listening|continue-reading|up-next-in-series)", parsed.path)
+        if match:
+            kind = match[1]
+            if kind == "continue-listening":
+                rows = [dict(MANIFEST['book'], files=[{'id': 1, 'format': 'mp3'}], coverVersion='fixture')]
+            else:
+                book = EBOOK if kind == "continue-reading" else COMIC_BOOK
+                rows = [dict(book, authors=['Orbit Test Reader'], coverVersion='fixture', seriesName='Quiet Orbit')]
+            limit = min(10, max(1, int(parse_qs(parsed.query).get('limit', ['10'])[0])))
+            return self.send_json({'books': rows[:limit], 'total': len(rows)})
+        match = re.fullmatch(r"/api/v1/books/([1-5])/thumbnail", parsed.path)
+        if match and not BOOK_DIR:
+            data = COMIC_IMAGES[int(match[1]) % len(COMIC_IMAGES)]
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/png')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        match = re.fullmatch(r"/api/v1/books/([2-5])/annotations", parsed.path)
+        if match:
+            query = parse_qs(parsed.query)
+            page = int(query.get('page', ['1'])[0])
+            size = int(query.get('pageSize', ['25'])[0])
+            file_id = int(query['bookFileId'][0])
+            rows = [row for row in ANNOTATIONS.values() if row['bookId'] == int(match[1]) and row['jumpFileId'] == file_id]
+            rows.sort(key=lambda row: row['id'], reverse=True)
+            return self.send_json({'items': rows[(page-1)*size:page*size], 'total': len(rows), 'page': page})
+        match=re.fullmatch(r"/api/v1/books/([2-5])",self.path)
+        if match: return self.send_json(DOCUMENTS[int(match[1])])
+        match=re.fullmatch(r"/api/v1/books/files/(10[1-5])/progress",self.path)
+        if match: return self.send_json(READING_PROGRESS.get(int(match[1]),{"percentage":0,"cfi":None,"pageNumber":None,"textUpdatedAt":None}))
+        match=re.fullmatch(r"/api/v1/cbz/files/(104|105)/pages(?:/([0-2]))?",self.path)
+        if match:
+            if match[2] is None: return self.send_json({"pageCount":3})
+            return self.send_bytes(COMIC_IMAGES[int(match[2])],"image/png")
+        if self.path == "/api/v1/books/files/102/serve": return self.send_bytes(PDF,"application/pdf")
+        if self.path == "/api/v1/books/files/103/serve": return self.send_bytes(CBZ,"application/zip")
+        if self.path == "/api/v1/books/files/101/serve":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/epub+zip")
+            self.send_header("Content-Length", len(EPUB))
+            self.end_headers()
+            return self.wfile.write(EPUB)
         if self.path == f"/api/v1/audiobooks/{MANIFEST['book']['id']}/manifest":
             return self.send_json(MANIFEST)
         if self.path == f"/api/v1/audiobooks/{MANIFEST['book']['id']}/playback-state":
@@ -104,6 +259,13 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return self.wfile.write(content[start:])
         self.send_json({}, 404)
+
+    def send_bytes(self, payload, mime):
+        self.send_response(200)
+        self.send_header("Content-Type",mime)
+        self.send_header("Content-Length",len(payload))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def send_file(self, path, mime):
         if not path.is_file():
@@ -167,6 +329,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="127.0.0.1", help="Bind address. Use a trusted LAN interface only for emulator access.")
     parser.add_argument("--port", type=int, default=4890)
     parser.add_argument("--book-dir", type=pathlib.Path, help="Private fixture directory with manifest.json, cover.jpg, and <fileId>.<format> audio files")
     args = parser.parse_args()
@@ -179,5 +342,5 @@ if __name__ == "__main__":
                 parser.error("Invalid fixture asset")
             if (BOOK_DIR / f"{asset['fileId']}.{asset['format']}").stat().st_size != asset["sizeBytes"]:
                 parser.error("Fixture audio size does not match its manifest")
-    print(f"Fixture listening on 127.0.0.1:{args.port}", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
+    print(f"Fixture listening on {args.host}:{args.port}", flush=True)
+    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()

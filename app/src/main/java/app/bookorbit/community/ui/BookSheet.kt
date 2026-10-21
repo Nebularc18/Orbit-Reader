@@ -94,7 +94,7 @@ fun BookSheet(
                     enabled = controller != null && (!state.offline || complete),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(if (complete) "Listen offline" else "Listen now")
+                    Text("Listen now")
                 }
             }
             if (state.session!!.canDownload && !complete && !downloading)

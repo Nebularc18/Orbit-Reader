@@ -26,7 +26,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -41,7 +40,6 @@ import androidx.work.WorkManager
 import app.bookorbit.community.OrbitApplication
 import app.bookorbit.community.data.*
 import app.bookorbit.community.playback.*
-import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
@@ -61,6 +59,9 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
     val message by app.playbackMessage.collectAsStateWithLifecycle()
     val conflict by app.progressConflict.collectAsStateWithLifecycle()
     var showPlayer by rememberSaveable { mutableStateOf(false) }
+    var showDashboard by rememberSaveable(state.session?.scope) { mutableStateOf(true) }
+    var pendingEbook by remember { mutableStateOf<Int?>(null) }
+    var showEbooks by rememberSaveable { mutableStateOf(false) }
     var signOut by remember { mutableStateOf(false) }
     val notificationPermission =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -89,9 +90,10 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                                 )
                             },
                             actions = {
-                                IconButton(onClick = { model.browse() }) {
-                                    Icon(Icons.Rounded.Refresh, "Refresh")
-                                }
+                                if (!showEbooks && !showDashboard)
+                                    IconButton(onClick = { model.browse() }) {
+                                        Icon(Icons.Rounded.Refresh, "Refresh")
+                                    }
                                 IconButton(onClick = { signOut = true }) {
                                     Icon(Icons.AutoMirrored.Rounded.Logout, "Sign out")
                                 }
@@ -122,14 +124,40 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                                 }
                             NavigationBar {
                                 NavigationBarItem(
-                                    selected = !state.offline,
-                                    onClick = { model.setOffline(false) },
+                                    selected = showDashboard,
+                                    onClick = {
+                                        showDashboard = true
+                                        showEbooks = false
+                                    },
+                                    icon = { Icon(Icons.Rounded.Home, null) },
+                                    label = { Text("Dashboard") },
+                                )
+                                NavigationBarItem(
+                                    selected = !state.offline && !showEbooks && !showDashboard,
+                                    onClick = {
+                                        showDashboard = false
+                                        showEbooks = false
+                                        model.setOffline(false)
+                                    },
                                     icon = { Icon(Icons.Rounded.Headphones, null) },
                                     label = { Text("Listen") },
                                 )
                                 NavigationBarItem(
-                                    selected = state.offline,
-                                    onClick = { model.setOffline(true) },
+                                    selected = showEbooks,
+                                    onClick = {
+                                        showDashboard = false
+                                        showEbooks = true
+                                    },
+                                    icon = { Icon(Icons.Rounded.AutoStories, null) },
+                                    label = { Text("Read") },
+                                )
+                                NavigationBarItem(
+                                    selected = state.offline && !showEbooks && !showDashboard,
+                                    onClick = {
+                                        showDashboard = false
+                                        showEbooks = false
+                                        model.setOffline(true)
+                                    },
                                     icon = { Icon(Icons.Rounded.DownloadDone, null) },
                                     label = { Text("Downloads") },
                                 )
@@ -137,184 +165,221 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                         }
                     },
                 ) { padding ->
-                    Column(
-                        Modifier.padding(padding)
-                            .widthIn(max = 840.dp)
-                            .fillMaxSize()
-                            .padding(horizontal = 20.dp)
-                    ) {
-                        Text(
-                            if (state.offline) "Your downloads" else "A good book. Anywhere.",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontFamily = FontFamily.Serif,
+                    if (showDashboard)
+                        Dashboard(
+                            app,
+                            state.session!!,
+                            Modifier.padding(padding),
+                            onListen = { id ->
+                                if (Build.VERSION.SDK_INT >= 33)
+                                    notificationPermission.launch(
+                                        Manifest.permission.POST_NOTIFICATIONS
+                                    )
+                                openBook(controller, id)
+                                showPlayer = true
+                            },
+                            onRead = { id ->
+                                pendingEbook = id
+                                showDashboard = false
+                                showEbooks = true
+                            },
                         )
-                        Text(
-                            if (state.offline) "Downloaded books play without your server."
-                            else
-                                "Audiobooks from ${state.session!!.user.name.ifBlank { state.session!!.user.username }}'s library",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 6.dp, bottom = 20.dp),
+                    else if (showEbooks)
+                        EbookLibrary(
+                            app,
+                            state.session!!,
+                            Modifier.padding(padding),
+                            pendingEbook,
+                            { pendingEbook = null },
                         )
-                        if (state.offline)
-                            Text(
-                                "${Formatter.formatShortFileSize(app, state.usedBytes)} used · ${Formatter.formatShortFileSize(app, state.availableBytes)} free on device",
-                                style = MaterialTheme.typography.labelLarge,
-                                modifier = Modifier.padding(bottom = 12.dp),
-                            )
-                        if (!state.offline)
-                            OutlinedTextField(
-                                value = state.query,
-                                onValueChange = model::search,
-                                modifier = Modifier.fillMaxWidth(),
-                                placeholder = { Text("Search your audiobooks") },
-                                leadingIcon = { Icon(Icons.Rounded.Search, null) },
-                                singleLine = true,
-                                shape = RoundedCornerShape(20.dp),
-                            )
-                        if (state.busy)
-                            LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 12.dp))
-                        state.error?.let { ErrorNotice(it) }
-                        message?.let { ErrorNotice(it) }
-                        if (state.books?.items?.isEmpty() == true && !state.busy)
-                            Column(Modifier.padding(vertical = 40.dp)) {
-                                Icon(
-                                    if (state.offline) Icons.Rounded.Download
-                                    else Icons.Rounded.AutoStories,
-                                    null,
-                                    Modifier.size(44.dp),
-                                )
-                                Text(
-                                    if (state.offline) "Your next journey starts here"
-                                    else "No audiobooks found",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    modifier = Modifier.padding(top = 16.dp),
-                                )
-                                Text(
-                                    if (state.offline)
-                                        "Download a book from Listen, then take it with you."
-                                    else
-                                        "Try a different search or add an audiobook to your server.",
-                                    modifier = Modifier.padding(top = 8.dp),
-                                )
-                            }
-                        LazyColumn(
-                            Modifier.weight(1f),
-                            contentPadding = PaddingValues(vertical = 16.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                    else
+                        Column(
+                            Modifier.padding(padding)
+                                .widthIn(max = 840.dp)
+                                .fillMaxSize()
+                                .padding(horizontal = 20.dp)
                         ) {
-                            items(state.books?.items.orEmpty(), key = { it.id }) { book ->
-                                Surface(
-                                    shape = RoundedCornerShape(16.dp),
-                                    tonalElevation = 1.dp,
-                                    modifier =
-                                        Modifier.fillMaxWidth().clickable { model.select(book.id) },
-                                ) {
-                                    Row(
-                                        Modifier.padding(12.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
+                            Text(
+                                if (state.offline) "Your downloads" else "A good book. Anywhere.",
+                                style = MaterialTheme.typography.headlineMedium,
+                                fontFamily = FontFamily.Serif,
+                            )
+                            Text(
+                                if (state.offline) "Downloaded books play without your server."
+                                else
+                                    "Audiobooks from ${state.session!!.user.name.ifBlank { state.session!!.user.username }}'s library",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 6.dp, bottom = 20.dp),
+                            )
+                            if (state.offline)
+                                Text(
+                                    "${Formatter.formatShortFileSize(app, state.usedBytes)} used · ${Formatter.formatShortFileSize(app, state.availableBytes)} free on device",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    modifier = Modifier.padding(bottom = 12.dp),
+                                )
+                            if (!state.offline)
+                                OutlinedTextField(
+                                    value = state.query,
+                                    onValueChange = model::search,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    placeholder = { Text("Search your audiobooks") },
+                                    leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(20.dp),
+                                )
+                            if (state.busy)
+                                LinearProgressIndicator(
+                                    Modifier.fillMaxWidth().padding(top = 12.dp)
+                                )
+                            state.error?.let { ErrorNotice(it) }
+                            message?.let { ErrorNotice(it) }
+                            if (state.books?.items?.isEmpty() == true && !state.busy)
+                                Column(Modifier.padding(vertical = 40.dp)) {
+                                    Icon(
+                                        if (state.offline) Icons.Rounded.Download
+                                        else Icons.Rounded.AutoStories,
+                                        null,
+                                        Modifier.size(44.dp),
+                                    )
+                                    Text(
+                                        if (state.offline) "Your next journey starts here"
+                                        else "No audiobooks found",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        modifier = Modifier.padding(top = 16.dp),
+                                    )
+                                    Text(
+                                        if (state.offline)
+                                            "Download a book from Listen, then take it with you."
+                                        else
+                                            "Try a different search or add an audiobook to your server.",
+                                        modifier = Modifier.padding(top = 8.dp),
+                                    )
+                                }
+                            LazyColumn(
+                                Modifier.weight(1f),
+                                contentPadding = PaddingValues(vertical = 16.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                items(state.books?.items.orEmpty(), key = { it.id }) { book ->
+                                    Surface(
+                                        shape = RoundedCornerShape(16.dp),
+                                        tonalElevation = 1.dp,
+                                        modifier =
+                                            Modifier.fillMaxWidth().clickable {
+                                                model.select(book.id)
+                                            },
                                     ) {
-                                        BookCover(
-                                            app,
-                                            state.session!!,
-                                            book.id,
-                                            book.coverVersion,
-                                            Modifier.size(68.dp, 88.dp),
-                                        )
-                                        Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
-                                            Text(
-                                                book.title ?: "Untitled",
-                                                style = MaterialTheme.typography.titleMedium,
-                                                maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis,
+                                        Row(
+                                            Modifier.padding(12.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            BookCover(
+                                                app,
+                                                state.session!!,
+                                                book.id,
+                                                book.coverVersion,
+                                                Modifier.size(68.dp, 88.dp),
                                             )
-                                            Text(
-                                                book.authors.joinToString(", "),
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 2,
-                                            )
-                                            if (state.offline) {
-                                                val download =
-                                                    state.downloads.firstOrNull {
-                                                        it.manifest.book.id == book.id
-                                                    }
-                                                val job =
-                                                    work.firstOrNull {
-                                                        it.tags.contains("book-${book.id}") &&
-                                                            !it.state.isFinished
-                                                    }
-                                                        ?: work.firstOrNull {
-                                                            it.tags.contains("book-${book.id}")
-                                                        }
+                                            Column(
+                                                Modifier.weight(1f).padding(horizontal = 16.dp)
+                                            ) {
                                                 Text(
-                                                    (if (download?.complete == true)
-                                                        "Available offline"
-                                                    else
-                                                        when (job?.state) {
-                                                            WorkInfo.State.RUNNING -> "Downloading"
-                                                            WorkInfo.State.ENQUEUED,
-                                                            WorkInfo.State.BLOCKED ->
-                                                                "Waiting for network or retry"
-                                                            WorkInfo.State.FAILED ->
-                                                                "Failed · Tap to retry"
-                                                            else -> "Incomplete · Tap to resume"
-                                                        }) +
-                                                        " · ${Formatter.formatShortFileSize(app, download?.bytes ?: 0)}",
-                                                    style = MaterialTheme.typography.labelMedium,
-                                                    modifier = Modifier.padding(top = 8.dp),
+                                                    book.title ?: "Untitled",
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    maxLines = 2,
+                                                    overflow = TextOverflow.Ellipsis,
                                                 )
-                                            }
-                                            book.readingProgress
-                                                ?.takeIf { it > 0 }
-                                                ?.let { progress ->
-                                                    LinearProgressIndicator(
-                                                        progress = {
-                                                            (progress / 100)
-                                                                .toFloat()
-                                                                .coerceIn(0f, 1f)
-                                                        },
-                                                        modifier =
-                                                            Modifier.fillMaxWidth()
-                                                                .padding(top = 12.dp),
+                                                Text(
+                                                    book.authors.joinToString(", "),
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color =
+                                                        MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 2,
+                                                )
+                                                if (state.offline) {
+                                                    val download =
+                                                        state.downloads.firstOrNull {
+                                                            it.manifest.book.id == book.id
+                                                        }
+                                                    val job =
+                                                        work.firstOrNull {
+                                                            it.tags.contains("book-${book.id}") &&
+                                                                !it.state.isFinished
+                                                        }
+                                                            ?: work.firstOrNull {
+                                                                it.tags.contains("book-${book.id}")
+                                                            }
+                                                    Text(
+                                                        (if (download?.complete == true)
+                                                            "Available offline"
+                                                        else
+                                                            when (job?.state) {
+                                                                WorkInfo.State.RUNNING ->
+                                                                    "Downloading"
+                                                                WorkInfo.State.ENQUEUED,
+                                                                WorkInfo.State.BLOCKED ->
+                                                                    "Waiting for network or retry"
+                                                                WorkInfo.State.FAILED ->
+                                                                    "Failed · Tap to retry"
+                                                                else -> "Incomplete · Tap to resume"
+                                                            }) +
+                                                            " · ${Formatter.formatShortFileSize(app, download?.bytes ?: 0)}",
+                                                        style =
+                                                            MaterialTheme.typography.labelMedium,
+                                                        modifier = Modifier.padding(top = 8.dp),
                                                     )
                                                 }
+                                                book.readingProgress
+                                                    ?.takeIf { it > 0 }
+                                                    ?.let { progress ->
+                                                        LinearProgressIndicator(
+                                                            progress = {
+                                                                (progress / 100)
+                                                                    .toFloat()
+                                                                    .coerceIn(0f, 1f)
+                                                            },
+                                                            modifier =
+                                                                Modifier.fillMaxWidth()
+                                                                    .padding(top = 12.dp),
+                                                        )
+                                                    }
+                                            }
+                                            Icon(Icons.AutoMirrored.Rounded.ArrowForward, null)
                                         }
-                                        Icon(Icons.AutoMirrored.Rounded.ArrowForward, null)
                                     }
                                 }
                             }
+                            if (state.books != null)
+                                Row(
+                                    Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    TextButton(
+                                        onClick = { model.page(-1) },
+                                        enabled = state.page > 1 && !state.busy,
+                                    ) {
+                                        Text("Previous")
+                                    }
+                                    Text(
+                                        "Page ${state.page}" +
+                                            if (state.books!!.total >= 0)
+                                                " · ${state.books!!.total} books"
+                                            else "",
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
+                                    TextButton(
+                                        onClick = { model.page(1) },
+                                        enabled =
+                                            !state.busy &&
+                                                (if (state.offline) state.books!!.items.size == 30
+                                                else state.page * 30 < state.books!!.total),
+                                    ) {
+                                        Text("Next")
+                                    }
+                                }
                         }
-                        if (state.books != null)
-                            Row(
-                                Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                TextButton(
-                                    onClick = { model.page(-1) },
-                                    enabled = state.page > 1 && !state.busy,
-                                ) {
-                                    Text("Previous")
-                                }
-                                Text(
-                                    "Page ${state.page}" +
-                                        if (state.books!!.total >= 0)
-                                            " · ${state.books!!.total} books"
-                                        else "",
-                                    style = MaterialTheme.typography.labelMedium,
-                                )
-                                TextButton(
-                                    onClick = { model.page(1) },
-                                    enabled =
-                                        !state.busy &&
-                                            (if (state.offline) state.books!!.items.size == 30
-                                            else state.page * 30 < state.books!!.total),
-                                ) {
-                                    Text("Next")
-                                }
-                            }
-                    }
                 }
             state.selected?.let { book ->
                 BookSheet(
@@ -326,7 +391,7 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                     onPlay = {
                         if (Build.VERSION.SDK_INT >= 33)
                             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        openBook(controller, book.book.id, offline = state.offline)
+                        openBook(controller, book.book.id)
                         model.closeDetail()
                         showPlayer = true
                     },
@@ -498,27 +563,27 @@ fun BookCover(
     bookId: Int,
     version: String,
     modifier: Modifier,
+    ebook: Boolean = false,
 ) {
-    val context = LocalContext.current
-    val loader =
-        remember(app) {
-            ImageLoader.Builder(context).okHttpClient(app.api.authenticatedClient).build()
-        }
     Box(
         modifier
             .clip(RoundedCornerShape(10.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(Icons.Rounded.Headphones, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Icon(
+            if (ebook) Icons.Rounded.AutoStories else Icons.Rounded.Headphones,
+            null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         AsyncImage(
             model =
-                ImageRequest.Builder(context)
+                ImageRequest.Builder(app)
                     .data("${session.server}/api/v1/books/$bookId/thumbnail")
                     .memoryCacheKey("${session.scope}/$bookId/$version")
                     .diskCachePolicy(CachePolicy.DISABLED)
                     .build(),
-            imageLoader = loader,
+            imageLoader = app.coverLoader,
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize(),
@@ -526,18 +591,12 @@ fun BookCover(
     }
 }
 
-fun openBook(
-    controller: MediaController?,
-    bookId: Int,
-    resolution: String? = null,
-    offline: Boolean = false,
-) {
+fun openBook(controller: MediaController?, bookId: Int, resolution: String? = null) {
     controller?.sendCustomCommand(
         SessionCommand(OPEN_BOOK, Bundle.EMPTY),
         Bundle().apply {
             putInt("bookId", bookId)
             putString("resolution", resolution)
-            putBoolean("offline", offline)
         },
     )
 }

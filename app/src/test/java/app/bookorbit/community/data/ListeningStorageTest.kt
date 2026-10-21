@@ -31,6 +31,15 @@ class ListeningStorageTest {
     }
 
     @Test
+    fun `remaining time is default and display preference survives restart within its account`() {
+        assertTrue(storage.showRemainingTime())
+        storage.saveShowRemainingTime(false)
+        assertFalse(ListeningStorage(context, "server-a-account-a").showRemainingTime())
+        assertTrue(ListeningStorage(context, "server-b-account-a").showRemainingTime())
+        assertTrue(ListeningStorage(context, "server-a-account-b").showRemainingTime())
+    }
+
+    @Test
     fun `speed is saved independently per book and scoped to server and account`() {
         storage.saveSpeed(1, 1.5f)
         storage.saveSpeed(2, 2f)

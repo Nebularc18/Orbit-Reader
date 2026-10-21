@@ -81,6 +81,24 @@ class AudioStorage(context: Context, val scope: String) {
             )
         }
 
+    fun recentlyPlayed(): List<AudioManifest> =
+        root
+            .listFiles()
+            .orEmpty()
+            .asSequence()
+            .filter { it.isDirectory && File(it, "position.json").isFile }
+            .sortedByDescending { File(it, "position.json").lastModified() }
+            .mapNotNull { dir ->
+                dir.name.toIntOrNull()?.let { id ->
+                    runCatching {
+                            manifest(id)?.takeIf { position(id)?.manifestRevision == it.revision }
+                        }
+                        .getOrNull()
+                }
+            }
+            .take(10)
+            .toList()
+
     fun downloadedBooks(page: Int): List<AudioManifest> =
         storedBooks().filter(::downloaded).drop((page - 1) * 30).take(30).toList()
 

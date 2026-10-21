@@ -42,6 +42,8 @@ data class BookCard(
     val authors: List<String> = emptyList(),
     val readingProgress: Double? = null,
     val coverVersion: String = "",
+    val files: List<EbookFile> = emptyList(),
+    val seriesName: String? = null,
 )
 
 @Serializable
@@ -133,3 +135,87 @@ data class LocalPosition(
     fun write() =
         ProgressWrite(assetId, positionMs, capturedAt, operationId, revision, manifestRevision)
 }
+
+@Serializable data class EbookAuthor(val name: String)
+
+@Serializable
+data class EbookFile(
+    val id: Int,
+    val format: String? = null,
+    val filename: String? = null,
+    val role: String = "",
+    val sizeBytes: Long? = null,
+    val fileHash: String? = null,
+    val contentVersion: String? = null,
+    val createdAt: String = "",
+) {
+    val supported: Boolean
+        get() = format?.lowercase() in listOf("epub", "kepub", "pdf", "cbz", "cbr", "cb7")
+
+    val revision: String
+        get() = fileHash ?: contentVersion ?: "$id-$sizeBytes-$createdAt"
+}
+
+@Serializable
+data class EbookDetail(
+    val id: Int,
+    val title: String? = null,
+    val authors: List<EbookAuthor> = emptyList(),
+    val files: List<EbookFile> = emptyList(),
+)
+
+@Serializable
+data class EbookProgress(
+    val percentage: Double = 0.0,
+    val cfi: String? = null,
+    val pageNumber: Int? = null,
+    val textUpdatedAt: String? = null,
+)
+
+@Serializable
+data class EbookProgressWrite(
+    val percentage: Double,
+    val pageNumber: Int? = null,
+    val cfi: String? = null,
+    val source: String = "text",
+)
+
+@Serializable data class ComicPages(val pageCount: Int)
+
+@Serializable
+data class AnnotationRect(val x: Double, val y: Double, val width: Double, val height: Double)
+
+@Serializable
+data class AnnotationPdf(val page: Int, val rect: AnnotationRect, val rects: List<AnnotationRect>)
+
+@Serializable
+data class BookAnnotation(
+    val id: Int,
+    val bookId: Int,
+    val cfi: String? = null,
+    val jumpFileId: Int? = null,
+    val text: String,
+    val note: String? = null,
+    val color: String = "#ffff00",
+    val style: String = "highlight",
+    val pdf: AnnotationPdf? = null,
+)
+
+@Serializable
+data class AnnotationPage(val items: List<BookAnnotation>, val total: Int, val page: Int)
+
+@Serializable
+data class AnnotationCreate(
+    val bookFileId: Int,
+    val text: String,
+    val cfi: String? = null,
+    val pdf: AnnotationPdf? = null,
+    val color: String = "#ffff00",
+    val style: String = "highlight",
+    val note: String? = null,
+    val chapterTitle: String? = null,
+)
+
+@Serializable data class AnnotationEdit(val note: String?)
+
+@Serializable data class DashboardShelf(val books: List<BookCard> = emptyList())

@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -12,7 +13,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -51,6 +56,7 @@ fun PlayerSheet(book: AudioManifest, controller: MediaController, app: OrbitAppl
     val timeline = remember(book) { AudioTimeline(book) }
     var bookScrub by remember(book.book.id) { mutableStateOf<Float?>(null) }
     val sleep by app.sleepMinutes.collectAsStateWithLifecycle()
+    val sleepAtChapterEnd by app.sleepAtChapterEnd.collectAsStateWithLifecycle()
     val session = remember { app.sessions.read()!! }
     val model: PlayerViewModel =
         viewModel(
@@ -148,7 +154,8 @@ fun PlayerSheet(book: AudioManifest, controller: MediaController, app: OrbitAppl
                 bookScrub?.let { seekBook(it.toLong()) }
                 bookScrub = null
             },
-            markers = timeline.chapterFractions,
+            showRemaining = listening.showRemainingTime,
+            onTimeToggle = model::toggleTimeDisplay,
             enabled = timeline.hasDurations,
         )
         Row(
@@ -191,7 +198,10 @@ fun PlayerSheet(book: AudioManifest, controller: MediaController, app: OrbitAppl
             TextButton(onClick = { showSpeed = true }) { Text("${speed}×") }
             TextButton(onClick = { showChapters = true }) { Text("Chapters") }
             TextButton(onClick = { showTimer = true }) {
-                Text(if (sleep > 0) "Sleep: $sleep min" else "Sleep timer")
+                Text(
+                    if (sleepAtChapterEnd) "Sleep: chapter end"
+                    else if (sleep > 0) "Sleep: $sleep min" else "Sleep timer"
+                )
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -284,6 +294,22 @@ fun PlayerSheet(book: AudioManifest, controller: MediaController, app: OrbitAppl
             title = { Text("Sleep timer") },
             text = {
                 Column {
+                    TextButton(
+                        enabled =
+                            timeline.chapterEnd(
+                                controller.currentMediaItemIndex,
+                                controller.currentPosition,
+                            ) != null,
+                        onClick = {
+                            controller.sendCustomCommand(
+                                SessionCommand(SLEEP_TIMER, Bundle.EMPTY),
+                                Bundle().apply { putBoolean("endOfChapter", true) },
+                            )
+                            showTimer = false
+                        },
+                    ) {
+                        Text("End of chapter")
+                    }
                     listOf(0, 15, 30, 45, 60).forEach { minutes ->
                         TextButton(
                             onClick = {
@@ -306,17 +332,51 @@ fun PlayerSheet(book: AudioManifest, controller: MediaController, app: OrbitAppl
             onDismissRequest = { showChapters = false },
             title = { Text("Chapters") },
             text = {
-                LazyColumn {
+                val currentChapterIndex = timeline.chapterIndex(elapsed)
+                val currentChapterId = book.chapters.getOrNull(currentChapterIndex)?.id
+                val chapterList =
+                    rememberLazyListState(
+                        initialFirstVisibleItemIndex = currentChapterIndex.coerceAtLeast(0)
+                    )
+                LazyColumn(Modifier.fillMaxWidth(), state = chapterList) {
                     items(book.chapters, key = { it.id }) { chapter ->
+                        val current = chapter.id == currentChapterId
                         TextButton(
+                            modifier =
+                                Modifier.fillMaxWidth().heightIn(min = 56.dp).semantics {
+                                    selected = current
+                                },
+                            shape = MaterialTheme.shapes.medium,
+                            colors =
+                                ButtonDefaults.textButtonColors(
+                                    containerColor =
+                                        if (current) MaterialTheme.colorScheme.secondaryContainer
+                                        else Color.Transparent,
+                                    contentColor =
+                                        if (current) MaterialTheme.colorScheme.onSecondaryContainer
+                                        else MaterialTheme.colorScheme.primary,
+                                ),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                             onClick = {
                                 val index =
                                     book.assets.indexOfFirst { it.assetId == chapter.assetId }
                                 if (index >= 0) controller.seekTo(index, chapter.assetOffsetMs)
                                 showChapters = false
-                            }
+                            },
                         ) {
-                            Text("${chapter.title} · ${duration(chapter.startMs)}")
+                            Text(
+                                "${chapter.title} · ${duration(chapter.startMs)}",
+                                modifier = Modifier.weight(1f),
+                                fontWeight =
+                                    if (current) FontWeight.SemiBold else FontWeight.Normal,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Start,
+                            )
+                            if (current)
+                                Icon(
+                                    Icons.Rounded.PlayArrow,
+                                    "Current chapter",
+                                    Modifier.padding(start = 8.dp).size(20.dp),
+                                )
                         }
                     }
                 }
