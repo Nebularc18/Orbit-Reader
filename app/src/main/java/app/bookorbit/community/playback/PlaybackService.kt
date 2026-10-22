@@ -13,11 +13,13 @@ import androidx.media3.session.*
 import app.bookorbit.community.MainActivity
 import app.bookorbit.community.OrbitApplication
 import app.bookorbit.community.data.*
+import app.bookorbit.community.download.enqueueDownload
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import java.io.IOException
 import java.time.Instant
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.withLock
 
 const val PAUSE_CONNECTION = "orbit.pause-connection"
 const val OPEN_BOOK = "orbit.open"
@@ -25,14 +27,14 @@ const val SLEEP_TIMER = "orbit.sleep"
 const val RELOAD_LISTENING = "orbit.listening"
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-class PlaybackService : MediaSessionService() {
+class PlaybackService : MediaLibraryService() {
     private val app
         get() = application as OrbitApplication
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var player: ExoPlayer
     private lateinit var listeningPlayer: ListeningPlayer
-    private lateinit var session: MediaSession
+    private lateinit var session: MediaLibrarySession
     private var listeningJob: Job? = null
     private var manifest: AudioManifest? = null
     private var accountScope: String? = null
@@ -41,6 +43,7 @@ class PlaybackService : MediaSessionService() {
     private var chapterTimer: PlayerMessage? = null
     private var chapterTarget: AudioSeek? = null
     private var openJob: Job? = null
+    private var completionJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -80,8 +83,19 @@ class PlaybackService : MediaSessionService() {
                 }
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
-                    if (playbackState == Player.STATE_ENDED && chapterTarget != null)
-                        finishSleepTimer()
+                    if (playbackState == Player.STATE_ENDED) {
+                        val sleeping = chapterTarget != null || timer?.isActive == true
+                        if (chapterTarget != null) finishSleepTimer()
+                        val book = manifest
+                        val owner = accountScope
+                        if (
+                            !sleeping &&
+                                book != null &&
+                                owner != null &&
+                                completionJob?.isActive != true
+                        )
+                            completionJob = scope.launch { completeBook(book, owner) }
+                    }
                 }
 
                 override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
@@ -109,17 +123,135 @@ class PlaybackService : MediaSessionService() {
         )
         listeningPlayer = ListeningPlayer(player)
         session =
-            MediaSession.Builder(this, listeningPlayer)
-                .setSessionActivity(
-                    PendingIntent.getActivity(
-                        this,
-                        0,
-                        Intent(this, MainActivity::class.java),
-                        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-                    )
-                )
-                .setCallback(
-                    object : MediaSession.Callback {
+            MediaLibrarySession.Builder(
+                    this,
+                    listeningPlayer,
+                    object : MediaLibrarySession.Callback {
+                        override fun onGetLibraryRoot(
+                            session: MediaLibrarySession,
+                            browser: MediaSession.ControllerInfo,
+                            params: LibraryParams?,
+                        ): ListenableFuture<LibraryResult<MediaItem>> =
+                            Futures.immediateFuture(
+                                LibraryResult.ofItem(CarLibrary(app).root(), params)
+                            )
+
+                        override fun onGetChildren(
+                            session: MediaLibrarySession,
+                            browser: MediaSession.ControllerInfo,
+                            parentId: String,
+                            page: Int,
+                            pageSize: Int,
+                            params: LibraryParams?,
+                        ): ListenableFuture<
+                            LibraryResult<com.google.common.collect.ImmutableList<MediaItem>>
+                        > = carChildren(parentId, page, pageSize, "", params)
+
+                        override fun onGetSearchResult(
+                            session: MediaLibrarySession,
+                            browser: MediaSession.ControllerInfo,
+                            query: String,
+                            page: Int,
+                            pageSize: Int,
+                            params: LibraryParams?,
+                        ): ListenableFuture<
+                            LibraryResult<com.google.common.collect.ImmutableList<MediaItem>>
+                        > = carChildren("orbit-search", page, pageSize, query.take(500), params)
+
+                        override fun onSearch(
+                            session: MediaLibrarySession,
+                            browser: MediaSession.ControllerInfo,
+                            query: String,
+                            params: LibraryParams?,
+                        ): ListenableFuture<LibraryResult<Void>> {
+                            val future =
+                                com.google.common.util.concurrent.SettableFuture.create<
+                                    LibraryResult<Void>
+                                >()
+                            scope.launch {
+                                try {
+                                    val account = app.sessions.read() ?: throw ApiFailure(401)
+                                    val count =
+                                        withContext(Dispatchers.IO) {
+                                            app.api
+                                                .books(1, query.take(500), owner = account.scope)
+                                                .total
+                                        }
+                                    if (app.sessions.read()?.scope == account.scope)
+                                        session.notifySearchResultChanged(
+                                            browser,
+                                            query,
+                                            count,
+                                            params,
+                                        )
+                                    future.set(LibraryResult.ofVoid(params))
+                                } catch (_: Exception) {
+                                    future.set(LibraryResult.ofError(SessionError.ERROR_IO))
+                                }
+                            }
+                            return future
+                        }
+
+                        override fun onSetMediaItems(
+                            session: MediaSession,
+                            controller: MediaSession.ControllerInfo,
+                            mediaItems: MutableList<MediaItem>,
+                            startIndex: Int,
+                            startPositionMs: Long,
+                        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+                            val future =
+                                com.google.common.util.concurrent.SettableFuture.create<
+                                    MediaSession.MediaItemsWithStartPosition
+                                >()
+                            scope.launch {
+                                try {
+                                    val account = app.sessions.read() ?: throw ApiFailure(401)
+                                    val requested =
+                                        mediaItems.singleOrNull()
+                                            ?: throw IllegalArgumentException(
+                                                "Choose one audiobook"
+                                            )
+                                    val query =
+                                        requested.requestMetadata.searchQuery?.take(500)?.trim()
+                                    val id =
+                                        if (!query.isNullOrBlank()) {
+                                            withContext(Dispatchers.IO) {
+                                                app.api
+                                                    .books(1, query, owner = account.scope)
+                                                    .items
+                                                    .firstOrNull()
+                                                    ?.id
+                                            }
+                                                ?: throw IllegalArgumentException(
+                                                    "No matching audiobook was found"
+                                                )
+                                        } else
+                                            parseCarBookId(requested.mediaId, account.scope)
+                                                ?: throw IllegalArgumentException(
+                                                    "Choose a book from this server"
+                                                )
+                                    check(app.sessions.read()?.scope == account.scope)
+                                    completionJob?.cancelAndJoin()
+                                    openJob?.cancelAndJoin()
+                                    check(open(id, null, startPlayback = false)) {
+                                        "Open Orbit Reader on your phone to review playback."
+                                    }
+                                    future.set(
+                                        MediaSession.MediaItemsWithStartPosition(
+                                            (0 until player.mediaItemCount).map(
+                                                player::getMediaItemAt
+                                            ),
+                                            player.currentMediaItemIndex,
+                                            player.currentPosition,
+                                        )
+                                    )
+                                } catch (e: Exception) {
+                                    future.setException(e)
+                                }
+                            }
+                            return future
+                        }
+
                         override fun onConnect(
                             session: MediaSession,
                             controller: MediaSession.ControllerInfo,
@@ -135,7 +267,8 @@ class PlaybackService : MediaSessionService() {
                             }
                             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                                 .setAvailableSessionCommands(
-                                    MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
+                                    MediaSession.ConnectionResult
+                                        .DEFAULT_SESSION_AND_LIBRARY_COMMANDS
                                         .buildUpon()
                                         .add(SessionCommand(PAUSE_CONNECTION, Bundle.EMPTY))
                                         .add(SessionCommand(OPEN_BOOK, Bundle.EMPTY))
@@ -160,6 +293,7 @@ class PlaybackService : MediaSessionService() {
                                         >()
                                     scope.launch {
                                         try {
+                                            completionJob?.cancelAndJoin()
                                             openJob?.cancelAndJoin()
                                             cancelSleepTimer()
                                             player.pause()
@@ -182,6 +316,7 @@ class PlaybackService : MediaSessionService() {
                                 }
 
                                 OPEN_BOOK -> {
+                                    completionJob?.cancel()
                                     openJob?.cancel()
                                     openJob =
                                         scope.launch {
@@ -207,8 +342,25 @@ class PlaybackService : MediaSessionService() {
                                                 if (
                                                     accountScope == owner &&
                                                         app.sessions.read()?.scope == owner
-                                                )
+                                                ) {
                                                     listeningPlayer.setIntervals(intervals)
+                                                    val options =
+                                                        withContext(Dispatchers.IO) {
+                                                            PlaybackToolsStorage(
+                                                                    this@PlaybackService,
+                                                                    owner,
+                                                                )
+                                                                .options()
+                                                        }
+                                                    if (
+                                                        accountScope == owner &&
+                                                            app.sessions.read()?.scope == owner
+                                                    )
+                                                        listeningPlayer.smartResume(
+                                                            options.smartResume,
+                                                            options.rewindSeconds,
+                                                        )
+                                                }
                                             } catch (error: CancellationException) {
                                                 throw error
                                             } catch (_: Exception) {
@@ -267,7 +419,15 @@ class PlaybackService : MediaSessionService() {
                                 SessionResult(SessionResult.RESULT_SUCCESS)
                             )
                         }
-                    }
+                    },
+                )
+                .setSessionActivity(
+                    PendingIntent.getActivity(
+                        this,
+                        0,
+                        Intent(this, MainActivity::class.java),
+                        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                    )
                 )
                 .build()
         scope.launch {
@@ -278,7 +438,42 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    private suspend fun open(bookId: Int, resolution: String?) {
+    private fun carChildren(
+        parent: String,
+        page: Int,
+        size: Int,
+        query: String,
+        params: LibraryParams?,
+    ): ListenableFuture<LibraryResult<com.google.common.collect.ImmutableList<MediaItem>>> {
+        val future =
+            com.google.common.util.concurrent.SettableFuture.create<
+                LibraryResult<com.google.common.collect.ImmutableList<MediaItem>>
+            >()
+        scope.launch {
+            try {
+                val items =
+                    withContext(Dispatchers.IO) {
+                        CarLibrary(app).children(parent, page, size, query)
+                    }
+                future.set(LibraryResult.ofItemList(items, params))
+            } catch (e: Exception) {
+                future.set(
+                    LibraryResult.ofError(
+                        if (e is ApiFailure && e.status == 401)
+                            SessionError.ERROR_SESSION_AUTHENTICATION_EXPIRED
+                        else SessionError.ERROR_IO
+                    )
+                )
+            }
+        }
+        return future
+    }
+
+    private suspend fun open(
+        bookId: Int,
+        resolution: String?,
+        startPlayback: Boolean = true,
+    ): Boolean {
         app.playbackMessage.value = null
         app.progressConflict.value = null
         try {
@@ -337,10 +532,10 @@ class PlaybackService : MediaSessionService() {
                     listening.speed(bookId) to listening.intervals()
                 }
             val isDownloaded = withContext(Dispatchers.IO) { storage.downloaded(result.first) }
-            if (app.sessions.read()?.scope != account.scope) return
+            if (app.sessions.read()?.scope != account.scope) return false
             capture()
             saveJob?.join()
-            if (app.sessions.read()?.scope != account.scope) return
+            if (app.sessions.read()?.scope != account.scope) return false
             if (chapterTarget != null) cancelSleepTimer()
             manifest = result.first
             accountScope = account.scope
@@ -369,10 +564,39 @@ class PlaybackService : MediaSessionService() {
                 result.first.assets
                     .indexOfFirst { it.assetId == result.second?.assetId }
                     .coerceAtLeast(0)
-            player.setMediaItems(items, startIndex, result.second?.positionMs ?: 0L)
+            val options =
+                withContext(Dispatchers.IO) {
+                    PlaybackToolsStorage(this@PlaybackService, account.scope).options()
+                }
+            listeningPlayer.smartResume(options.smartResume, options.rewindSeconds)
+            var start = AudioSeek(startIndex, result.second?.positionMs ?: 0L)
+            if (resolution == null && result.second != null) {
+                val age =
+                    runCatching {
+                            java.time.Duration.between(
+                                    Instant.parse(result.second!!.capturedAt),
+                                    Instant.now(),
+                                )
+                                .toMillis()
+                        }
+                        .getOrDefault(0)
+                val rewind = smartRewindMillis(options.smartResume, age, options.rewindSeconds)
+                if (rewind > 0)
+                    start =
+                        AudioTimeline(result.first)
+                            .skip(
+                                start.assetIndex,
+                                start.positionMs,
+                                -rewind,
+                                result.first.assets[start.assetIndex].durationMs ?: 0,
+                            )
+            }
+            player.setMediaItems(items, start.assetIndex, start.positionMs)
             player.prepare()
-            player.play()
+            if (startPlayback) player.play() else player.pause()
             app.currentManifest.value = result.first
+            scope.launch { prefetchNext(result.first.book.id, account.scope) }
+            return true
         } catch (error: CancellationException) {
             throw error
         } catch (error: ApiFailure) {
@@ -381,6 +605,80 @@ class PlaybackService : MediaSessionService() {
         } catch (_: Exception) {
             app.playbackMessage.value =
                 "Could not open this audiobook. Check your server connection."
+        }
+        return false
+    }
+
+    private suspend fun nextBook(
+        bookId: Int,
+        owner: String,
+        options: PlaybackOptions,
+        prefetch: Boolean = false,
+    ): Int? {
+        val tools = PlaybackToolsStorage(this, owner)
+        if (if (prefetch) options.prefetchNext else options.autoplayQueue)
+            tools
+                .queue()
+                .firstOrNull { it.id != bookId }
+                ?.let {
+                    return it.id
+                }
+        if (!options.continueSeries) return null
+        val detail = app.api.ebookDetail(bookId, owner)
+        return detail.seriesId?.let { app.api.nextSeriesAudio(it, bookId, owner) }
+    }
+
+    private suspend fun prefetchNext(bookId: Int, owner: String) {
+        try {
+            withContext(Dispatchers.IO) {
+                val options = PlaybackToolsStorage(this@PlaybackService, owner).options()
+                val account =
+                    app.sessions.read()?.takeIf { it.scope == owner && it.canDownload }
+                        ?: return@withContext
+                if (options.prefetchNext)
+                    nextBook(bookId, owner, options, prefetch = true)?.let {
+                        enqueueDownload(this@PlaybackService, account, it, true)
+                    }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {}
+    }
+
+    private suspend fun completeBook(book: AudioManifest, owner: String) {
+        capture()
+        saveJob?.join()
+        try {
+            val options =
+                withContext(Dispatchers.IO) {
+                    val tools = PlaybackToolsStorage(this@PlaybackService, owner)
+                    tools.remove(book.book.id)
+                    tools.options()
+                }
+            if (app.sessions.read()?.scope != owner) return
+            val next =
+                withContext(Dispatchers.IO) {
+                    if (options.autoplayQueue || options.continueSeries)
+                        nextBook(book.book.id, owner, options)
+                    else null
+                }
+            if (app.sessions.read()?.scope != owner) return
+            if (options.removeFinishedAudio)
+                withContext(Dispatchers.IO) {
+                    app.downloadLock(owner, book.book.id).withLock {
+                        AudioStorage(this@PlaybackService, owner).removeAudioFiles(book.book.id)
+                    }
+                }
+            if (options.removeFinishedAudio) player.clearMediaItems()
+            if (next != null && next != book.book.id && open(next, null))
+                withContext(Dispatchers.IO) {
+                    PlaybackToolsStorage(this@PlaybackService, owner).remove(next)
+                }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            app.playbackMessage.value =
+                "Could not continue to the next book. Open your queue to try again."
         }
     }
 
@@ -424,7 +722,8 @@ class PlaybackService : MediaSessionService() {
             }
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = session
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession =
+        session
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         if (!player.playWhenReady || player.mediaItemCount == 0) stopSelf()

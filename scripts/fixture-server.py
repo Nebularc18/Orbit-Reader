@@ -102,15 +102,18 @@ MANIFEST = {
     "assets": ASSETS, "totalDurationMs": 40000,
     "chapters": [{"id": f"chapter-{i}", "title": f"Chapter {i + 1}", "assetId": ASSETS[i]["assetId"], "sequence": i, "startMs": i * 20000, "endMs": (i + 1) * 20000, "assetOffsetMs": 0} for i in range(2)],
 }
-STATE = None
-OPERATION = None
+STATE = {}
+OPERATION = {}
+BOOK_STATUS = {}
+BOOK_RATING = {}
+BOOK_COLLECTIONS = {}
 LOCK = threading.Lock()
 BOOK_DIR = None
 
 
 class Handler(BaseHTTPRequestHandler):
     def send_json(self, value, status=200):
-        payload = json.dumps(value).encode()
+        payload = b"" if status == 204 else json.dumps(value).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", len(payload))
@@ -131,10 +134,21 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/v1/auth/login":
             if data.get("username") != "reader" or data.get("password") != "reader" or data.get("clientKind") != "native":
                 return self.send_json({}, 401)
-            return self.send_json({"accessToken": "fixture-access", "refreshToken": "a" * 64, "user": {"id": 1, "name": "Reader", "username": "reader", "isSuperuser": False, "permissions": ["library_download"]}})
+            return self.send_json({"accessToken": "fixture-access", "refreshToken": "a" * 64, "user": {"id": 1, "name": "Reader", "username": "reader", "isSuperuser": False, "permissions": ["library_download", "library_edit_metadata"]}})
         if self.path == "/api/v1/auth/refresh":
             return self.send_json({"accessToken": "fixture-access", "refreshToken": "a" * 64})
         if self.path == "/api/v1/auth/logout":
+            return self.send_json({})
+        if self.path == '/api/v1/books/bulk-set-rating':
+            if not self.authorized(): return
+            if set(data) != {'bookIds','rating'} or not isinstance(data['bookIds'],list) or (data['rating'] is not None and data['rating'] not in [1,2,3,4,5]): return self.send_json({},400)
+            for book_id in data['bookIds']: BOOK_RATING[book_id] = data['rating']
+            return self.send_json({},204)
+        match = re.fullmatch(r'/api/v1/collections/(\d+)/books',self.path)
+        if match:
+            if not self.authorized(): return
+            if set(data) != {'bookIds'}: return self.send_json({},400)
+            for book_id in data['bookIds']: BOOK_COLLECTIONS.setdefault(book_id,{1}).add(int(match[1]))
             return self.send_json({})
         if not self.authorized():
             return
@@ -153,6 +167,7 @@ class Handler(BaseHTTPRequestHandler):
             books = []
             if not formats or any(value in formats for value in ["mp3", "m4b", "m4a"]):
                 books.append(MANIFEST["book"])
+                books.append(dict(MANIFEST["book"], id=6, title="A Quiet Orbit · Next Audio Test"))
             if not formats or "epub" in formats or "kepub" in formats:
                 books.append({"id": 2, "title": EBOOK["title"], "authors": ["Orbit Test Reader"]})
             for entry in [PDF_BOOK, COMIC_BOOK, CONVERTED_BOOK]:
@@ -167,7 +182,7 @@ class Handler(BaseHTTPRequestHandler):
             status_values = next((rule.get('value', []) for rule in data.get('filter', {}).get('rules', []) if rule.get('field') == 'readStatus'), None)
             if status_values is not None:
                 statuses = ['unread', 'reading', 'read', 'want_to_read', 'on_hold', 'rereading', 'skimmed', 'abandoned']
-                items = [row for row in items if statuses[row['id'] % len(statuses)] in status_values]
+                items = [row for row in items if BOOK_STATUS.get(row['id'], statuses[row['id'] % len(statuses)]) in status_values]
             specs = data.get('sort', [{'field': 'title', 'dir': 'asc'}])
             allowed_sorts = {'title', 'author', 'addedAt', 'series', 'seriesIndex', 'publishedDate', 'rating'}
             if any(spec.get('field') not in allowed_sorts or spec.get('dir') not in {'asc', 'desc'} for spec in specs):
@@ -202,8 +217,24 @@ class Handler(BaseHTTPRequestHandler):
         row['note'] = data.get('note')
         return self.send_json(row)
 
-    def do_PATCH(self): self.annotation_mutation()
-    def do_DELETE(self): self.annotation_mutation(delete=True)
+    def do_PATCH(self):
+        match = re.fullmatch(r'/api/v1/books/(\d+)/status',self.path)
+        if match:
+            if not self.authorized(): return
+            data=self.body()
+            if set(data)!={'status'} or data['status'] not in ['unread','want_to_read','reading','on_hold','rereading','read','skimmed','abandoned']: return self.send_json({},400)
+            BOOK_STATUS[int(match[1])] = data['status']
+            return self.send_json({'status':data['status']})
+        self.annotation_mutation()
+    def do_DELETE(self):
+        match = re.fullmatch(r'/api/v1/collections/(\d+)/books',self.path)
+        if match:
+            if not self.authorized(): return
+            data=self.body()
+            if set(data)!={'bookIds'}: return self.send_json({},400)
+            for book_id in data['bookIds']: BOOK_COLLECTIONS.setdefault(book_id,{1}).discard(int(match[1]))
+            return self.send_json({})
+        self.annotation_mutation(delete=True)
 
     def do_GET(self):
         if not self.authorized():
@@ -213,7 +244,7 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"/api/v1/(series|authors|collections|smart-scopes)", parsed.path)
         if match:
             kind = match[1]
-            rows = [{'id': i + 1, 'name': ('Quiet Orbit' if kind == 'series' and i == 0 else f'{kind.title()} {i + 1:03}'), 'bookCount': 5, 'readCount': 2 if kind == 'series' else None, 'coverBookIds': [2, 3] if kind == 'series' else [], 'coverBookId': 2 if kind == 'authors' else None, 'mediaType': 'books'} for i in range(max(3, CATALOG_SIZE))]
+            rows = [{'id': i + 1, 'name': ('Quiet Orbit' if kind == 'series' and i == 0 else f'{kind.title()} {i + 1:03}'), 'bookCount': 5, 'readCount': 2 if kind == 'series' else None, 'coverBookIds': [2, 3] if kind == 'series' else [], 'coverBookId': 2 if kind == 'authors' else None, 'mediaType': 'books', 'isOwner': True} for i in range(max(3, CATALOG_SIZE))]
             if kind in ['collections', 'smart-scopes']:
                 return self.send_json(rows)
             q = query.get('q', [''])[0].casefold()
@@ -221,6 +252,8 @@ class Handler(BaseHTTPRequestHandler):
             rows.sort(key=lambda row: row['name'], reverse=query.get('order', ['asc'])[0] == 'desc')
             page, size = int(query.get('page', ['0'])[0]), int(query.get('size', ['30'])[0])
             return self.send_json({'items': rows[page*size:(page+1)*size], 'total': len(rows), 'page': page, 'size': size})
+        match = re.fullmatch(r'/api/v1/series/(\d+)/books/(\d+)/next',parsed.path)
+        if match: return self.send_json({'next': {'bookId':6,'fileId':1,'format':'mp3','title':'A Quiet Orbit · Next Audio Test','seriesIndex':'2'} if int(match[2])==1 else None})
         match = re.fullmatch(r"/api/v1/(series|authors|collections|smart-scopes)/(\d+)/books", parsed.path)
         if match:
             rows = [dict(MANIFEST['book'], files=[{'id': 1, 'format': 'mp3'}], coverVersion='fixture', readStatus={'status': 'read'})]
@@ -270,13 +303,14 @@ class Handler(BaseHTTPRequestHandler):
             rows = [row for row in ANNOTATIONS.values() if row['bookId'] == int(match[1]) and row['jumpFileId'] == file_id]
             rows.sort(key=lambda row: row['id'], reverse=True)
             return self.send_json({'items': rows[(page-1)*size:page*size], 'total': len(rows), 'page': page})
-        match=re.fullmatch(r"/api/v1/books/([1-5])",self.path)
+        match=re.fullmatch(r"/api/v1/books/([1-6])",self.path)
         if match:
-            if int(match[1]) == 1:
+            if int(match[1]) in [1,6]:
                 book = dict(MANIFEST['book'], authors=[{'name': name} for name in MANIFEST['book']['authors']], files=[{'id': asset['fileId'], 'format': asset['format'], 'filename': f'Part {asset["sequence"]+1}.mp3', 'sizeBytes': asset['sizeBytes']} for asset in ASSETS])
             else:
                 book = DOCUMENTS[int(match[1])]
-            return self.send_json(dict(book, description='<p>A synthetic journey through a quiet observatory.</p><p>Explore the next chapter.</p><script>throw new Error("blocked")</script>', subtitle='Synthetic verification edition', seriesName='Quiet Orbit', seriesIndex='1', publisher='Orbit Test Press', publishedYear=2026, language='en', pageCount=120, isbn13='9780000000000', rating=4.5, genres=['Fiction', 'Adventure'], tags=['Synthetic'], collections=[{'id':1,'name':'Test shelf'}], readStatus={'status':'reading'}, libraryName='Test library'))
+            book = dict(book, id=int(match[1]), title='A Quiet Orbit · Next Audio Test' if int(match[1])==6 else book['title'])
+            return self.send_json(dict(book, seriesId=1, description='<p>A synthetic journey through a quiet observatory.</p><p>Explore the next chapter.</p><script>throw new Error("blocked")</script>', subtitle='Synthetic verification edition', seriesName='Quiet Orbit', seriesIndex='1', publisher='Orbit Test Press', publishedYear=2026, language='en', pageCount=120, isbn13='9780000000000', rating=BOOK_RATING.get(int(match[1]),4.5), genres=['Fiction', 'Adventure'], tags=['Synthetic'], collections=[{'id':i,'name':f'Collections {i:03}'} for i in sorted(BOOK_COLLECTIONS.get(int(match[1]),{1}))], readStatus={'status':BOOK_STATUS.get(int(match[1]),'reading')}, libraryName='Test library'))
         match=re.fullmatch(r"/api/v1/books/files/(10[1-5])/progress",self.path)
         if match: return self.send_json(READING_PROGRESS.get(int(match[1]),{"percentage":0,"cfi":None,"pageNumber":None,"textUpdatedAt":None}))
         match=re.fullmatch(r"/api/v1/cbz/files/(104|105)/pages(?:/([0-2]))?",self.path)
@@ -291,10 +325,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", len(EPUB))
             self.end_headers()
             return self.wfile.write(EPUB)
-        if self.path == f"/api/v1/audiobooks/{MANIFEST['book']['id']}/manifest":
-            return self.send_json(MANIFEST)
-        if self.path == f"/api/v1/audiobooks/{MANIFEST['book']['id']}/playback-state":
-            return self.send_json(STATE)
+        match = re.fullmatch(r'/api/v1/audiobooks/(\d+)/(manifest|playback-state)',self.path)
+        if match and int(match[1]) in [MANIFEST['book']['id'],6]:
+            if match[2]=='playback-state': return self.send_json(STATE.get(int(match[1])))
+            result = dict(MANIFEST,book=dict(MANIFEST['book'],id=int(match[1]),title='A Quiet Orbit · Next Audio Test' if int(match[1])==6 else MANIFEST['book']['title']))
+            return self.send_json(result)
         if BOOK_DIR and self.path in [f"/api/v1/books/{MANIFEST['book']['id']}/thumbnail", f"/api/v1/books/{MANIFEST['book']['id']}/cover"]:
             return self.send_file(BOOK_DIR / "cover.jpg", "image/jpeg")
         asset = next((item for item in ASSETS if item["assetId"] in self.path or f"/files/{item['fileId']}/download" in self.path), None)
@@ -366,21 +401,18 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def do_PUT(self):
-        global STATE, OPERATION
-        if not self.authorized():
-            return
-        if self.path != f"/api/v1/audiobooks/{MANIFEST['book']['id']}/playback-state":
-            return self.send_json({}, 404)
-        data = self.body()
+        if not self.authorized(): return
+        match=re.fullmatch(r'/api/v1/audiobooks/(\d+)/playback-state',self.path)
+        if not match or int(match[1]) not in [MANIFEST['book']['id'],6]: return self.send_json({},404)
+        book_id=int(match[1]); data=self.body()
         with LOCK:
-            if data["operationId"] == OPERATION:
-                return self.send_json(STATE)
-            if data["baseRevision"] != (STATE["revision"] if STATE else 0):
-                return self.send_json({}, 409)
-            STATE = {key: data[key] for key in ["assetId", "positionMs", "capturedAt", "manifestRevision"]}
-            STATE["revision"] = data["baseRevision"] + 1
-            OPERATION = data["operationId"]
-            self.send_json(STATE)
+            state=STATE.get(book_id)
+            if data['operationId']==OPERATION.get(book_id): return self.send_json(state)
+            if data['baseRevision']!=(state['revision'] if state else 0): return self.send_json({},409)
+            state={key:data[key] for key in ['assetId','positionMs','capturedAt','manifestRevision']}
+            state['revision']=data['baseRevision']+1
+            STATE[book_id]=state; OPERATION[book_id]=data['operationId']
+            self.send_json(state)
 
     def log_message(self, format_string, *args):
         print(f"fixture {self.command} {self.path} {args[1] if len(args) > 1 else ''}", flush=True)

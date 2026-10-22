@@ -80,6 +80,7 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
     val appearanceModel: AppearanceViewModel = viewModel(key = "appearance-${state.session?.scope}")
     val appearance by appearanceModel.state.collectAsStateWithLifecycle()
     var showAppearance by remember { mutableStateOf(false) }
+    var showTools by remember { mutableStateOf(false) }
     var showServers by remember { mutableStateOf(false) }
     LaunchedEffect(state.session?.scope) {
         showPlayer = false
@@ -240,6 +241,10 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                     appearance,
                     appearanceModel,
                     onClose = { showAppearance = false },
+                    onPlaybackTools = {
+                        showAppearance = false
+                        showTools = true
+                    },
                     onServers = {
                         showAppearance = false
                         showServers = true
@@ -247,6 +252,21 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                     onSignOut = {
                         showAppearance = false
                         signOut = true
+                    },
+                )
+            if (showTools && state.session != null)
+                PlaybackToolsDialog(
+                    state.session!!,
+                    {
+                        showTools = false
+                        controller?.sendCustomCommand(
+                            SessionCommand(RELOAD_LISTENING, Bundle.EMPTY),
+                            Bundle.EMPTY,
+                        )
+                    },
+                    {
+                        openBook(controller, it)
+                        showPlayer = true
                     },
                 )
             if (showServers && !state.addingServer)

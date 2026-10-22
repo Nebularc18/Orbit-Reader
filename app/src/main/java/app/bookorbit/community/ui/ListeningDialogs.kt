@@ -117,6 +117,15 @@ fun BookmarksDialog(
         text = {
             Column {
                 Text("Saved on this device for this account.")
+                val exportOwner =
+                    (androidx.compose.ui.platform.LocalContext.current.applicationContext
+                            as app.bookorbit.community.OrbitApplication)
+                        .sessions
+                        .read()
+                        ?.scope
+                NotesExportButton(exportOwner, bookmarks.isNotEmpty()) { markdown ->
+                    exportAudioBookmarks(book, bookmarks, markdown)
+                }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 TextButton(
                     onClick = onAdd,

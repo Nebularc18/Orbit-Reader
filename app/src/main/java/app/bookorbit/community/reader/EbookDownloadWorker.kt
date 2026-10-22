@@ -11,7 +11,9 @@ import androidx.work.*
 import app.bookorbit.community.OrbitApplication
 import app.bookorbit.community.R
 import app.bookorbit.community.data.ApiFailure
+import app.bookorbit.community.data.PlaybackToolsStorage
 import app.bookorbit.community.data.hasConnection
+import app.bookorbit.community.download.OfflineLimitReached
 import java.io.File
 import java.io.IOException
 import java.util.zip.ZipEntry
@@ -36,7 +38,10 @@ fun enqueueEbook(
             .setConstraints(
                 Constraints.Builder()
                     .setRequiredNetworkType(
-                        if (needsNetwork) NetworkType.CONNECTED else NetworkType.NOT_REQUIRED
+                        if (!needsNetwork) NetworkType.NOT_REQUIRED
+                        else if (PlaybackToolsStorage(context, owner).options().wifiOnly)
+                            NetworkType.UNMETERED
+                        else NetworkType.CONNECTED
                     )
                     .build()
             )
@@ -75,6 +80,7 @@ class EbookDownloadWorker(context: Context, params: WorkerParameters) :
         val partial = File(target.path + ".part")
         try {
             if (storage.ready(book.file)) return Result.success()
+            app.offlineBudget.reserve(owner, "ebook-$owner-$fileId", book.file.sizeBytes ?: 0)
             if (book.file.format?.lowercase() in listOf("cbr", "cb7")) {
                 val count = app.api.comicPages(fileId, owner)
                 require(count in 1..20000) { "This comic has no pages or too many pages." }
@@ -115,6 +121,8 @@ class EbookDownloadWorker(context: Context, params: WorkerParameters) :
                                         "Comic exceeds the supported size."
                                     }
                                     output.write(buffer, 0, size)
+                                    if (bytes / (1024 * 1024) != (bytes - size) / (1024 * 1024))
+                                        app.offlineBudget.check(owner)
                                 }
                             }
                             output.closeEntry()
@@ -155,6 +163,8 @@ class EbookDownloadWorker(context: Context, params: WorkerParameters) :
                                     "This ebook exceeds the 512 MB limit."
                                 }
                                 sink.write(buffer, 0, count)
+                                if (received / (1024 * 1024) != (received - count) / (1024 * 1024))
+                                    app.offlineBudget.check(owner)
                                 if (SystemClock.elapsedRealtime() - lastReport > 700) {
                                     if (app.sessions.read()?.scope != owner) throw IOException()
                                     setProgress(
@@ -193,6 +203,7 @@ class EbookDownloadWorker(context: Context, params: WorkerParameters) :
             }
             if (app.sessions.read()?.scope != owner)
                 return if (app.sessions.hasConnection(owner)) Result.retry() else Result.failure()
+            app.offlineBudget.check(owner)
             if (!partial.renameTo(target)) throw IOException()
             return Result.success()
         } catch (error: CancellationException) {
@@ -200,6 +211,8 @@ class EbookDownloadWorker(context: Context, params: WorkerParameters) :
         } catch (error: Exception) {
             if (app.sessions.read()?.scope != owner && app.sessions.hasConnection(owner))
                 return Result.retry()
+            if (error is OfflineLimitReached)
+                return Result.failure(workDataOf("error" to error.message))
             if (error is IOException && error !is ApiFailure && runAttemptCount < 3)
                 return Result.retry()
             return Result.failure(
@@ -210,6 +223,7 @@ class EbookDownloadWorker(context: Context, params: WorkerParameters) :
                 )
             )
         } finally {
+            app.offlineBudget.release("ebook-$owner-$fileId")
             partial.delete()
         }
     }

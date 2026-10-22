@@ -357,7 +357,7 @@ private fun BrowserBookSheet(
                 }
             )
                 Text("No supported reading or audio files are available.")
-            BookInformation(book)
+            ManagedBookInformation(app, account, book)
         }
     }
 }

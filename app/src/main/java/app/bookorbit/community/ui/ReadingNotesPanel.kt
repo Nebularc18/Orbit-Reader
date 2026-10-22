@@ -93,6 +93,9 @@ fun ReadingNotesPanel(
             text = {
                 Column {
                     Text("Saved on this device for this account.")
+                    NotesExportButton(owner, notes.isNotEmpty()) { markdown ->
+                        exportReadingNotes("Book notes", notes, markdown)
+                    }
                     if (owner != null)
                         TextButton(onClick = { server = true }) { Text("Server annotations") }
                     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }

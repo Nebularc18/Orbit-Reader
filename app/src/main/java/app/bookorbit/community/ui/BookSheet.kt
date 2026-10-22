@@ -192,7 +192,9 @@ fun BookSheet(
                     )
                 }
             }
-            state.details?.let { detail -> item { BookInformation(detail) } }
+            state.details?.let { detail ->
+                item { ManagedBookInformation(app, state.session!!, detail) }
+            }
             if (book.chapters.isNotEmpty())
                 item {
                     Text(

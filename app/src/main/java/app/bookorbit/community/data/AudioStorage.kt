@@ -152,6 +152,18 @@ class AudioStorage(context: Context, val scope: String) {
 
     fun availableBytes(): Long = root.usableSpace
 
+    fun removeAudioFiles(bookId: Int) {
+        bookDir(bookId)
+            .listFiles()
+            .orEmpty()
+            .filter {
+                it.name == "download" ||
+                    it.name.endsWith(".audio") ||
+                    it.name.endsWith(".audio.part")
+            }
+            .forEach { check(it.delete() || !it.exists()) }
+    }
+
     fun deleteBook(bookId: Int) =
         bookDir(bookId)
             .listFiles()

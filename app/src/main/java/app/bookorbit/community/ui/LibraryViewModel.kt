@@ -45,6 +45,8 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         LibraryState(
             session = session,
             connections = app.sessions.connections(),
+            wifiOnly =
+                session?.let { PlaybackToolsStorage(app, it.scope).options().wifiOnly } ?: true,
             readFilter =
                 session?.let { CatalogReadFilterStorage(app, it.scope).read("audio") }
                     ?: CatalogReadFilter.ALL,

@@ -17,6 +17,48 @@ class ListeningPlayer(private val delegate: Player) : ForwardingSimpleBasePlayer
     }
 
     private var intervals = SkipIntervals()
+    private var smart = false
+    private var rewind = 10
+    private var pausedAt: Long? = null
+
+    init {
+        delegate.addListener(
+            object : Player.Listener {
+                override fun onPlayWhenReadyChanged(ready: Boolean, reason: Int) {
+                    if (!ready && delegate.playbackState != Player.STATE_ENDED)
+                        pausedAt = android.os.SystemClock.elapsedRealtime()
+                }
+            }
+        )
+    }
+
+    fun smartResume(enabled: Boolean, seconds: Int) {
+        smart = enabled
+        rewind = seconds
+        pausedAt = null
+    }
+
+    override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
+        val elapsed = pausedAt?.let { android.os.SystemClock.elapsedRealtime() - it } ?: 0
+        val delta = app.bookorbit.community.data.smartRewindMillis(smart, elapsed, rewind)
+        if (
+            playWhenReady &&
+                delta > 0 &&
+                timeline != null &&
+                delegate.playbackState != Player.STATE_ENDED
+        ) {
+            val target =
+                timeline!!.skip(
+                    delegate.currentMediaItemIndex,
+                    delegate.currentPosition,
+                    -delta,
+                    delegate.duration,
+                )
+            delegate.seekTo(target.assetIndex, target.positionMs)
+        }
+        if (playWhenReady) pausedAt = null
+        return super.handleSetPlayWhenReady(playWhenReady)
+    }
 
     fun setIntervals(value: SkipIntervals) {
         intervals = value.validated()
@@ -35,6 +77,7 @@ class ListeningPlayer(private val delegate: Player) : ForwardingSimpleBasePlayer
         positionMs: Long,
         seekCommand: Int,
     ): ListenableFuture<*> {
+        pausedAt = null
         if (seekCommand != Player.COMMAND_SEEK_BACK && seekCommand != Player.COMMAND_SEEK_FORWARD)
             return super.handleSeek(mediaItemIndex, positionMs, seekCommand)
         val timeline = timeline ?: return Futures.immediateVoidFuture()
