@@ -103,3 +103,21 @@ The final build passed 130 unit tests with zero failures/errors, formatting, And
 Smart resume was also verified through the emulator player: after pausing at 0:17 for over a minute with a 10-second rewind selected, resuming showed 0:08 after roughly one second of playback. Playback was paused afterward.
 
 On the final APK, reopening the synthetic EPUB and paging forward initialized read-aloud at sentence 7 (Passage 3) rather than sentence 1. Next sentence, speech start, and leaving the reader were checked again. Paragraph spacing is preserved in extracted speech text.
+
+## Reliability device pass
+
+October 22, 2026. Tested the installed APK on Samsung SM-S918B Android 16 and Pixel emulator Android 15. Used an isolated synthetic server connection for playback and mutations; its test audiobook contained two two-minute audio parts. A temporary slow fixture outside the repository supplied a bounded transfer so interruptions could be observed. No production book was played or modified. Calls were explicitly deferred by the user. No connected Bluetooth audio output was available, so Samsung playback used the phone output.
+
+Confirmed on the emulator: full audiobook download and storage usage; pause after 172 kB; partial-file retention after closing/reopening the app; Resume issuing HTTP 206 from byte offset 172032; completed offline availability; continued playback with the screen off; play/pause and previous/next actions on the swipe lock screen; airplane-mode playback; app restart in airplane mode and resume around the saved 0:22 position; chapter-end sleep timer at 3x speed, pausing 22 ms into the next audio part at the chapter boundary; seeking past the chapter target also paused playback. Restored the emulator's previous no-lock setting after testing.
+
+Confirmed on Samsung: synthetic audiobook streaming, notification play/pause and track changes, and background playback continuing while Home was foreground. MediaSession reported PLAYING at 0:24 in the second part with no playback error. Paused playback afterward. The phone locked itself normally during the background test; the user unlocked it. Removed the temporary synthetic connection with Sign out and verified return to the existing production account and Home.
+
+Confirmed emulator server switching cleared the prior mini-player and retained separate downloaded libraries. After simultaneous synthetic listening on both devices and offline emulator use, opening the audiobook online displayed the explicit resume-conflict choice. Selected Use server position and verified playback, then paused. In airplane mode, saved EPUB, PDF, and CBZ opened; EPUB retained its saved passage and highlights after a full app restart and rendered in landscape, PDF reopened on page 3 with highlights, and the comic rendered its saved image. Restored portrait and network settings afterward.
+
+Android Auto head-unit/DHU behavior and connected Bluetooth hardware remain untested. Long timed sleep-timer expiry and an overnight battery/Doze run were not observed in this pass. Calls remain for a later real incoming call. This was a device verification pass; application code was unchanged.
+
+Also interrupted an active download by enabling airplane mode after the second synthetic book reached 13% (526 kB reported). The UI changed to Waiting for network or retry and retained 786 kB on disk. Restored Wi-Fi without pressing Resume to exercise WorkManager's automatic recovery. The initial no-network enqueue likewise waited without reporting completion. Neither device's inspected crash buffer contained an Orbit Reader crash entry.
+
+The interrupted transfer resumed automatically with HTTP 206 at byte offset 786432, advanced past 80%, and completed as Available offline without pressing Resume. No application fixes or APK replacement were needed during this verification pass.
+
+Cleanup completed: both devices returned to their original server connection; removed the temporary reliability connection from both devices; left production playback untouched; restored emulator network, portrait orientation, and no-lock setting; stopped the temporary reliability fixture. The original synthetic fixture remains available for the emulator. Only this verification document changed in the repository.
