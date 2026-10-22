@@ -6,6 +6,11 @@ This is a standalone Android project. It builds from this repository's root and 
 
 ## Build and install
 
+For APK downloads without a Play Store account, use this repository's
+[GitHub Releases](https://github.com/Nebularc18/Orbit-Reader/releases) when a release
+is available. See [GitHub APK releases](docs/RELEASING.md) for signing setup,
+publishing, and installation instructions.
+
 Requires JDK 17 and Android SDK platform 35 with build tools 35.0.0. Open this directory in Android Studio, or set `JAVA_HOME` and `ANDROID_HOME` and run:
 
 ```sh
