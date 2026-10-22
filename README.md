@@ -17,6 +17,12 @@ The Gradle wrapper includes a distribution checksum. SDK paths belong in an untr
 
 Use the server's root URL, including its reverse-proxy path if present. A trailing `/api/v1` is accepted. HTTPS is preferred. HTTP is supported for trusted local servers with an explicit message on the sign-in screen. Normal certificate validation stays enabled. Password login must be enabled on the server. OIDC and magic-link sign-in are pending.
 
+## Multiple servers
+
+Connect multiple BookOrbit servers and switch between them from the server name on Home, or Appearance and account → Servers. Add server signs in to another server without signing out of existing connections. Libraries stay separate. The switcher identifies each connection by address and username; choosing one makes it the active library. Playback pauses and persists its position before switching. Queued downloads and sync jobs wait while their account is inactive and retain account checks before API calls. Downloads, progress, covers, appearance, and catalog preferences remain scoped to the server and account.
+
+Saved access/refresh tokens share the Android Keystore encrypted session store and remain excluded from backup and device transfer. Existing single-server sign-ins migrate automatically. Sign out disconnects only the active connection and returns to another saved server when available; its downloaded files stay private for a future sign-in to the same account.
+
 ## Library and activity
 
 Library groups books by Series, Authors, Collections, and Shelves. Shelves are the saved smart scopes from BookOrbit. Series and author search and ordering run on the server with 30-item pages and a bounded 150-item window. The server currently returns collection and smart-shelf metadata as lists; these are searched and paged locally. Opening a group retrieves its books in bounded pages, with series in volume order. Each book opens its information sheet with Read and Listen actions for its supported files.

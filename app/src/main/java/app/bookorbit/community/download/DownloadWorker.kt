@@ -37,7 +37,9 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) :
             val bookId = inputData.getInt("bookId", 0)
             val session =
                 app.sessions.read()?.takeIf { it.scope == accountScope }
-                    ?: return@withContext Result.failure()
+                    ?: return@withContext if (app.sessions.hasConnection(accountScope))
+                        Result.retry()
+                    else Result.failure()
             if (!session.canDownload)
                 return@withContext Result.failure(
                     workDataOf("error" to "Your account cannot download books.")
@@ -71,7 +73,9 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) :
                 }
                 for ((index, asset) in manifest.assets.withIndex()) {
                     if (isStopped || app.sessions.read()?.scope != accountScope)
-                        return@withContext Result.failure()
+                        return@withContext if (app.sessions.hasConnection(accountScope))
+                            Result.retry()
+                        else Result.failure()
                     val file = storage.asset(bookId, asset)
                     if (
                         file.isFile &&
@@ -110,10 +114,20 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) :
                 }
                 Result.success()
             } catch (error: ApiFailure) {
+                if (
+                    app.sessions.read()?.scope != accountScope &&
+                        app.sessions.hasConnection(accountScope)
+                )
+                    return@withContext Result.retry()
                 if ((error.status == 429 || error.status in 500..599) && runAttemptCount < 4)
                     Result.retry()
                 else Result.failure(workDataOf("error" to error.message))
             } catch (_: IOException) {
+                if (
+                    app.sessions.read()?.scope != accountScope &&
+                        app.sessions.hasConnection(accountScope)
+                )
+                    return@withContext Result.retry()
                 if (runAttemptCount < 4) Result.retry()
                 else
                     Result.failure(

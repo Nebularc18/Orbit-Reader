@@ -127,6 +127,12 @@ class OrbitApi(val sessions: SessionStore) {
                 .also(sessions::save)
         }
 
+    fun switchConnection(scope: String): Session =
+        synchronized(refreshLock) {
+            check(sessions.activate(scope)) { "This saved connection is no longer available." }
+            sessions.read() ?: throw ApiFailure(401)
+        }
+
     fun logout() =
         synchronized(refreshLock) {
             val session = sessions.read() ?: return@synchronized

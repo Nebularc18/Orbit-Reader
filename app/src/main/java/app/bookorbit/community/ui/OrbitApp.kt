@@ -80,9 +80,25 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
     val appearanceModel: AppearanceViewModel = viewModel(key = "appearance-${state.session?.scope}")
     val appearance by appearanceModel.state.collectAsStateWithLifecycle()
     var showAppearance by remember { mutableStateOf(false) }
+    var showServers by remember { mutableStateOf(false) }
+    LaunchedEffect(state.session?.scope) {
+        showPlayer = false
+        showAppearance = false
+        showServers = false
+        showEbooks = false
+        pendingEbook = null
+    }
     OrbitTheme(appearance) {
         AmbientBackground(Modifier.fillMaxSize()) {
-            if (state.session == null) SignIn(state.busy, state.error, model::login)
+            if (state.session == null || state.addingServer)
+                SignIn(
+                    state.busy,
+                    state.error,
+                    { server, username, password ->
+                        model.login(server, username, password, controller)
+                    },
+                    if (state.session != null) ({ model.addServer(false) }) else null,
+                )
             else
                 Scaffold(
                     containerColor = Color.Transparent,
@@ -184,6 +200,7 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                                 openError = state.error,
                                 onAppearance = { showAppearance = true },
                                 onActivity = { showActivity = true },
+                                onServers = { showServers = true },
                                 onLibrary = {
                                     showDashboard = false
                                     showLibrary = true
@@ -223,10 +240,27 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                     appearance,
                     appearanceModel,
                     onClose = { showAppearance = false },
+                    onServers = {
+                        showAppearance = false
+                        showServers = true
+                    },
                     onSignOut = {
                         showAppearance = false
                         signOut = true
                     },
+                )
+            if (showServers && !state.addingServer)
+                ServerConnections(
+                    state.connections,
+                    state.session?.scope,
+                    state.busy,
+                    state.error,
+                    onSwitch = { model.switchServer(it, controller) },
+                    onAdd = {
+                        showServers = false
+                        model.addServer(true)
+                    },
+                    onClose = { showServers = false },
                 )
             state.selected?.let { book ->
                 BookSheet(
@@ -276,21 +310,16 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
             if (signOut)
                 AlertDialog(
                     onDismissRequest = { signOut = false },
-                    title = { Text("Sign out?") },
+                    title = { Text("Disconnect this server?") },
                     text = {
                         Text(
-                            "Playback will stop. Downloads stay private on this device and are available when you sign in to this account again."
+                            "Only this connection will be signed out. Downloads stay on this device and are available when you connect this account again."
                         )
                     },
                     confirmButton = {
                         TextButton(
                             onClick = {
-                                controller?.stop()
-                                controller?.clearMediaItems()
-                                app.stopService(
-                                    android.content.Intent(app, PlaybackService::class.java)
-                                )
-                                model.logout {}
+                                model.logout(controller)
                                 signOut = false
                             }
                         ) {
@@ -304,10 +333,16 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
 }
 
 @Composable
-private fun SignIn(busy: Boolean, error: String?, login: (String, String, String) -> Unit) {
+private fun SignIn(
+    busy: Boolean,
+    error: String?,
+    login: (String, String, String) -> Unit,
+    onCancel: (() -> Unit)? = null,
+) {
     var server by rememberSaveable { mutableStateOf("") }
     var username by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    BackHandler(onCancel != null && !busy) { onCancel?.invoke() }
     Column(
         Modifier.fillMaxSize()
             .safeDrawingPadding()
@@ -324,8 +359,11 @@ private fun SignIn(busy: Boolean, error: String?, login: (String, String, String
                 Modifier.size(48.dp),
                 tint = MaterialTheme.colorScheme.primary,
             )
+            if (onCancel != null)
+                TextButton(onClick = onCancel, enabled = !busy) { Text("Back to your server") }
             Text(
-                "Your library.\nYour listening space.",
+                if (onCancel != null) "Connect another server"
+                else "Your library.\nYour listening space.",
                 style = MaterialTheme.typography.headlineLarge,
                 fontFamily = FontFamily.Serif,
             )

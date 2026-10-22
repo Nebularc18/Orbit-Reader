@@ -8,6 +8,7 @@ import androidx.work.WorkManager
 import app.bookorbit.community.OrbitApplication
 import app.bookorbit.community.data.*
 import app.bookorbit.community.download.enqueueDownload
+import app.bookorbit.community.playback.PAUSE_CONNECTION
 import java.io.IOException
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -18,6 +19,8 @@ import kotlinx.coroutines.sync.withLock
 
 data class LibraryState(
     val session: Session? = null,
+    val connections: List<Session> = emptyList(),
+    val addingServer: Boolean = false,
     val busy: Boolean = false,
     val error: String? = null,
     val query: String = "",
@@ -41,6 +44,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     private fun initialState(session: Session?) =
         LibraryState(
             session = session,
+            connections = app.sessions.connections(),
             readFilter =
                 session?.let { CatalogReadFilterStorage(app, it.scope).read("audio") }
                     ?: CatalogReadFilter.ALL,
@@ -108,11 +112,17 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             }
             .cachedIn(viewModelScope)
 
-    fun login(server: String, username: String, password: String) {
+    fun login(
+        server: String,
+        username: String,
+        password: String,
+        controller: androidx.media3.session.MediaController? = null,
+    ) {
         if (mutable.value.busy) return
         viewModelScope.launch {
             mutable.update { it.copy(busy = true, error = null) }
             try {
+                pauseForConnection(controller)
                 val session =
                     withContext(Dispatchers.IO) { app.api.login(server, username, password) }
                 mutable.value = initialState(session)
@@ -125,20 +135,92 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun logout(onStopped: () -> Unit) {
+    fun logout(controller: androidx.media3.session.MediaController?) {
+        if (mutable.value.busy) return
         detailJob?.cancel()
-        onStopped()
         val session = app.sessions.read() ?: return
-        WorkManager.getInstance(app).cancelAllWorkByTag("account-${session.scope}")
-        app.currentManifest.value = null
-        mutable.value = LibraryState(busy = true)
         viewModelScope.launch {
+            mutable.update { it.copy(busy = true, error = null) }
             try {
-                withContext(Dispatchers.IO) { app.api.logout() }
-            } catch (_: IOException) {} finally {
-                mutable.value = LibraryState()
+                pauseForConnection(controller)
+                WorkManager.getInstance(app).cancelAllWorkByTag("account-${session.scope}")
+                try {
+                    withContext(Dispatchers.IO) { app.api.logout() }
+                } catch (_: IOException) {}
+                mutable.value = initialState(app.sessions.read())
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                mutable.update {
+                    it.copy(busy = false, error = "Could not disconnect this server. Try again.")
+                }
             }
         }
+    }
+
+    fun addServer(value: Boolean) {
+        if (!mutable.value.busy) mutable.update { it.copy(addingServer = value, error = null) }
+    }
+
+    fun switchServer(scope: String, controller: androidx.media3.session.MediaController?) {
+        if (mutable.value.busy || scope == mutable.value.session?.scope) return
+        detailJob?.cancel()
+        viewModelScope.launch {
+            mutable.update { it.copy(busy = true, error = null) }
+            try {
+                pauseForConnection(controller)
+                val session = withContext(Dispatchers.IO) { app.api.switchConnection(scope) }
+                mutable.value = initialState(session)
+                browse()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                mutable.update {
+                    it.copy(busy = false, error = "Could not switch servers. Try again.")
+                }
+            }
+        }
+    }
+
+    private suspend fun pauseForConnection(controller: androidx.media3.session.MediaController?) {
+        if (mutable.value.session == null) return
+        if (controller == null) {
+            check(app.currentManifest.value == null) {
+                "Wait for playback controls to reconnect before switching servers."
+            }
+            return
+        }
+        val paused =
+            kotlinx.coroutines.withTimeoutOrNull(15_000) {
+                kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
+                    val future =
+                        controller.sendCustomCommand(
+                            androidx.media3.session.SessionCommand(
+                                PAUSE_CONNECTION,
+                                android.os.Bundle.EMPTY,
+                            ),
+                            android.os.Bundle.EMPTY,
+                        )
+                    future.addListener(
+                        {
+                            if (continuation.isActive) {
+                                val result = runCatching {
+                                    check(
+                                        future.get().resultCode ==
+                                            androidx.media3.session.SessionResult.RESULT_SUCCESS
+                                    )
+                                }
+                                result.fold(
+                                    { continuation.resumeWith(Result.success(Unit)) },
+                                    { continuation.resumeWith(Result.failure(it)) },
+                                )
+                            }
+                        },
+                        androidx.core.content.ContextCompat.getMainExecutor(app),
+                    )
+                }
+            }
+        check(paused != null) { "Could not pause playback before switching servers." }
     }
 
     fun readFilter(value: CatalogReadFilter) {

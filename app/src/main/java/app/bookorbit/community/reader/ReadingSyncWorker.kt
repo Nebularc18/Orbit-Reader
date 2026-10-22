@@ -17,7 +17,9 @@ class ReadingSyncWorker(context: Context, params: WorkerParameters) :
         withContext(Dispatchers.IO) {
             val app = applicationContext as OrbitApplication
             val owner = inputData.getString("owner") ?: return@withContext Result.failure()
-            if (app.sessions.read()?.scope != owner) return@withContext Result.failure()
+            if (app.sessions.read()?.scope != owner)
+                return@withContext if (app.sessions.hasConnection(owner)) Result.retry()
+                else Result.failure()
             val fileId = inputData.getInt("fileId", 0)
             val baseline =
                 wireJson.decodeFromString<EbookProgress>(
@@ -48,6 +50,8 @@ class ReadingSyncWorker(context: Context, params: WorkerParameters) :
                         )
                     )
             } catch (_: IOException) {
+                if (app.sessions.read()?.scope != owner && app.sessions.hasConnection(owner))
+                    return@withContext Result.retry()
                 return@withContext if (runAttemptCount < 3) Result.retry()
                 else
                     Result.failure(
