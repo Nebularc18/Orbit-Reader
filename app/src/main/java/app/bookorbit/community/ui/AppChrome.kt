@@ -85,6 +85,7 @@ fun AppearanceSheet(
     onClose: () -> Unit,
     onSignOut: () -> Unit,
     onServers: () -> Unit = {},
+    onPlaybackTools: () -> Unit = {},
 ) {
     ModalBottomSheet(
         onDismissRequest = onClose,
@@ -162,6 +163,11 @@ fun AppearanceSheet(
                 }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            TextButton(onClick = onPlaybackTools) {
+                Icon(Icons.Rounded.QueueMusic, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Playback & downloads")
+            }
             TextButton(onClick = onServers) {
                 Icon(Icons.Rounded.Dns, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))

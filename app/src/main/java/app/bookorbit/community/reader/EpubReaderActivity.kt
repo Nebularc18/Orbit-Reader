@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -71,6 +72,9 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
     private var noteDraft by mutableStateOf<ReadingNote?>(null)
     private var controlsVisible by mutableStateOf(false)
     private val snackbar = SnackbarHostState()
+    private lateinit var readAloud: ReadAloudController
+    private var speechLocator: Locator? = null
+    private var showSpeech by mutableStateOf(false)
     private var sharedPosition by mutableStateOf<EbookProgressWrite?>(null)
 
     private fun mark(highlight: Boolean) {
@@ -126,6 +130,35 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
         enableEdgeToEdge()
         model.load(intent.getStringExtra("scope") ?: "", intent.getIntExtra("fileId", 0))
         notesModel.load(intent.getStringExtra("scope") ?: "", intent.getIntExtra("fileId", 0))
+        readAloud =
+            ReadAloudController(this, intent.getStringExtra("scope").orEmpty()) {
+                sentence,
+                before,
+                after ->
+                speechLocator?.let { base ->
+                    val locator =
+                        base.copy(
+                            locations = Locator.Locations(),
+                            text =
+                                Locator.Text(before = before, highlight = sentence, after = after),
+                        )
+                    lifecycleScope.launch {
+                        navigator?.applyDecorations(
+                            listOf(
+                                Decoration(
+                                    "read-aloud",
+                                    locator,
+                                    Decoration.Style.Highlight(
+                                        android.graphics.Color.rgb(245, 209, 101)
+                                    ),
+                                )
+                            ),
+                            "orbit-read-aloud",
+                        )
+                        navigator?.go(locator)
+                    }
+                }
+            }
         setContent {
             val state by model.state.collectAsStateWithLifecycle()
             var showContents by remember { mutableStateOf(false) }
@@ -173,6 +206,42 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
                                         }
                                     },
                                     actions = {
+                                        IconButton(
+                                            onClick = {
+                                                val book = state.book ?: return@IconButton
+                                                val current = navigator ?: return@IconButton
+                                                lifecycleScope.launch {
+                                                    val location =
+                                                        current.firstVisibleElementLocator()
+                                                            ?: current.currentLocator.value
+                                                    if (
+                                                        speechLocator?.href != location.href ||
+                                                            readAloud.state.value.count == 0
+                                                    ) {
+                                                        speechLocator = location
+                                                        readAloud.load(
+                                                            EbookStorage(
+                                                                    this@EpubReaderActivity,
+                                                                    intent
+                                                                        .getStringExtra("scope")
+                                                                        .orEmpty(),
+                                                                )
+                                                                .content(book.file),
+                                                            location.href.toString(),
+                                                            current.currentLocator.value.locations
+                                                                .progression
+                                                                ?: location.locations.progression
+                                                                ?: 0.0,
+                                                            location.text.highlight,
+                                                        )
+                                                    }
+                                                    showSpeech = true
+                                                }
+                                            },
+                                            enabled = navigator != null,
+                                        ) {
+                                            Icon(Icons.Rounded.VolumeUp, "Read aloud")
+                                        }
                                         TextButton(
                                             onClick = { showContents = true },
                                             enabled = navigator != null,
@@ -307,6 +376,7 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
                             }
                     navigator?.applyDecorations(decorations, "orbit-notes")
                 }
+                if (showSpeech) ReadAloudDialog(readAloud) { showSpeech = false }
                 noteDraft?.let { draft ->
                     ReadingNoteEditor(draft, { noteDraft = null }) {
                         notesModel.save(it)
@@ -530,8 +600,14 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
     }
 
     override fun onPause() {
+        if (::readAloud.isInitialized) readAloud.pause()
         navigator?.currentLocator?.value?.let(model::saveLocation)
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        if (::readAloud.isInitialized) readAloud.close()
+        super.onDestroy()
     }
 
     override fun onResume() {

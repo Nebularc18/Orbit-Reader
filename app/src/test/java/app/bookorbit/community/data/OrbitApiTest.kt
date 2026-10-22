@@ -35,6 +35,45 @@ class OrbitApiTest {
     }
 
     @Test
+    fun `book management sends exact contracts and rejects a switched account`() {
+        val owner = store.read()!!.scope
+        server.enqueue(MockResponse().setBody("{}"))
+        api.setBookStatus(7, "read", owner)
+        server.takeRequest().let {
+            assertEquals("PATCH", it.method)
+            assertEquals("/books/api/v1/books/7/status", it.path)
+            assertEquals("""{"status":"read"}""", it.body.readUtf8())
+        }
+        server.enqueue(MockResponse().setBody("{}"))
+        api.setBookRating(7, null, owner)
+        assertEquals("""{"bookIds":[7],"rating":null}""", server.takeRequest().body.readUtf8())
+        for (add in listOf(true, false)) {
+            server.enqueue(MockResponse().setBody("{}"))
+            api.collectionMembership(2, 7, add, owner)
+            server.takeRequest().let {
+                assertEquals(if (add) "POST" else "DELETE", it.method)
+                assertEquals("/books/api/v1/collections/2/books", it.path)
+                assertEquals("""{"bookIds":[7]}""", it.body.readUtf8())
+            }
+        }
+        server.enqueue(MockResponse().setBody("""{"next":{"bookId":9}}"""))
+        assertEquals(9, api.nextSeriesAudio(1, 7, owner))
+        assertEquals(
+            "/books/api/v1/series/1/books/7/next?formatGroup=audio",
+            server.takeRequest().path,
+        )
+        server.enqueue(MockResponse().setBody("""{"next":null}"""))
+        assertNull(api.nextSeriesAudio(1, 9, owner))
+        server.takeRequest()
+        assertThrows(IllegalArgumentException::class.java) {
+            api.setBookStatus(7, "finished", owner)
+        }
+        assertThrows(IllegalArgumentException::class.java) { api.setBookRating(7, 6, owner) }
+        assertThrows(ApiFailure::class.java) { api.setBookStatus(7, "read", "other") }
+        assertEquals(6, server.requestCount)
+    }
+
+    @Test
     fun `two server logins retain credentials and route only the active account`() {
         val first = store.read()!!
         val secondServer = MockWebServer().apply { start() }

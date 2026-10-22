@@ -40,7 +40,21 @@ Home links to Activity, which shows server-recorded reading and listening time, 
 - Offline playback from private app storage, scoped by server and account.
 - Local listening positions and queued, revision-checked server updates. Conflicts require an explicit choice between this device and the server.
 
-Android Auto, Wear OS, widgets, listening statistics, and Read Along are pending. Audiobook bookmarks are implemented. The Downloads tab shows complete and unfinished downloads, account-scoped audio storage usage, and device free space. Resume, retry, pause, and removal are available on the book sheet. Removal is disabled for the active audiobook. Downloads are retained on sign-out and can only be browsed after signing back into the same account.
+Wear OS, widgets, and synchronized Read Along are pending. Audiobook bookmarks are implemented. The Downloads tab shows complete and unfinished downloads, account-scoped audio storage usage, and device free space. Resume, retry, pause, and removal are available on the book sheet. Removal is disabled for the active audiobook. Downloads are retained on sign-out and can only be browsed after signing back into the same account.
+
+## Book tools and playback preferences
+
+Book information includes account reading status, a personal rating (when the account has metadata permission), and membership in owned collections. Changes use BookOrbit's server APIs and refresh the cached detail. Audiobook details offer Play next and Add to queue. Appearance and account → Playback & downloads opens the account-scoped queue and preferences.
+
+Smart resume is optional: after a pause of at least a minute, rewind by 5, 10, 15, or 30 seconds. Manual seeking preserves the chosen position. Queue autoplay and next-in-series continuation are separate opt-in settings. The queue takes priority when autoplay is enabled. Progress conflicts still require review on the phone before playback continues.
+
+Offline preferences include Wi-Fi-only downloads, a per-account storage limit, optional Wi-Fi prefetch of the next queued or series audiobook, and optional removal of finished audiobook audio. Storage limits block further downloads without deleting existing books. Finished cleanup retains bookmarks, manifests, and listening positions. All automatic playback and deletion options start disabled.
+
+Notes and audiobook bookmarks can be exported as Markdown or plain text through Android's file picker. Exports include human-readable passages, notes, and bookmark times; account credentials and internal locators are excluded.
+
+Android Auto can browse Continue listening, Downloaded books, Listening queue, and a paged audiobook catalog, with search and server-scoped book selection. Sign in and select the active server on the phone first. A physical head unit or Desktop Head Unit remains necessary to verify the car interface.
+
+EPUB/KEPUB read-aloud uses installed offline Android speech voices, with speed, voice selection, sentence navigation, and sentence highlighting. It reads the open chapter and pauses when leaving the reader. Open the next chapter to continue. PDF/comic read-aloud, background speech controls, and synchronized Read Along are not included.
 
 ## Ebook and comic reading
 

@@ -247,7 +247,7 @@ fun EbookLibrary(
                             }
                         }
                     }
-                    BookInformation(book)
+                    ManagedBookInformation(app, account, book)
                     TextButton(onClick = model::closeDetail) { Text("Close") }
                 }
             }

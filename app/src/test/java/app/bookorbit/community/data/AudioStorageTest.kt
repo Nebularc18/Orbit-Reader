@@ -32,6 +32,30 @@ class AudioStorageTest {
     }
 
     @Test
+    fun `finished cleanup removes media while preserving manifest position and bookmarks`() {
+        storage.markDownload(manifest)
+        storage.asset(1, asset).writeBytes(ByteArray(8))
+        java.io.File(storage.asset(1, asset).path + ".part").writeBytes(ByteArray(2))
+        storage.capturePosition(1, asset.assetId, 1000, "2026-10-22T00:00:00Z", manifest.revision)
+        val notes = ListeningStorage(RuntimeEnvironment.getApplication(), "account-a")
+        val bookmark =
+            AudioBookmark(
+                title = "Keep",
+                assetId = asset.assetId,
+                positionMs = 500,
+                manifestRevision = manifest.revision,
+            )
+        notes.addBookmark(1, bookmark)
+        storage.removeAudioFiles(1)
+        assertFalse(storage.asset(1, asset).exists())
+        assertFalse(java.io.File(storage.asset(1, asset).path + ".part").exists())
+        assertNotNull(storage.manifest(1))
+        assertEquals(1000L, storage.position(1)!!.positionMs)
+        assertEquals(listOf(bookmark), notes.bookmarks(1))
+        assertTrue(storage.downloads(1).isEmpty())
+    }
+
+    @Test
     fun `download sorting happens across all books before slicing a page`() {
         for (id in 1..35) storage.markDownload(
             manifest.copy(book = manifest.book.copy(id = id, title = "Book %02d".format(36 - id)))

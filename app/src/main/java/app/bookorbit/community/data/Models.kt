@@ -138,7 +138,7 @@ data class LocalPosition(
         ProgressWrite(assetId, positionMs, capturedAt, operationId, revision, manifestRevision)
 }
 
-@Serializable data class EbookAuthor(val name: String)
+@Serializable data class EbookAuthor(val name: String, val id: Int? = null)
 
 @Serializable
 data class EbookFile(
@@ -164,6 +164,7 @@ data class EbookDetail(
     val title: String? = null,
     val authors: List<EbookAuthor> = emptyList(),
     val files: List<EbookFile> = emptyList(),
+    val seriesId: Int? = null,
     val subtitle: String? = null,
     val description: String? = null,
     val seriesName: String? = null,

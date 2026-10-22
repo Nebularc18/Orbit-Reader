@@ -160,6 +160,63 @@ class OrbitApi(val sessions: SessionStore) {
         return decode(request("dashboard/scrollers/$type?limit=10", expectedScope = owner))
     }
 
+    fun nextSeriesAudio(seriesId: Int, bookId: Int, owner: String): Int? {
+        require(seriesId > 0 && bookId > 0)
+        val value: JsonObject =
+            decode(
+                request(
+                    "series/$seriesId/books/$bookId/next?formatGroup=audio",
+                    expectedScope = owner,
+                )
+            )
+        return value["next"]
+            ?.takeIf { it != JsonNull }
+            ?.jsonObject
+            ?.get("bookId")
+            ?.jsonPrimitive
+            ?.intOrNull
+    }
+
+    fun setBookStatus(id: Int, status: String, owner: String) {
+        require(id > 0 && status in bookStatuses)
+        request(
+                "books/$id/status",
+                "PATCH",
+                buildJsonObject { put("status", status) }.toString(),
+                expectedScope = owner,
+            )
+            .close()
+    }
+
+    fun setBookRating(id: Int, rating: Int?, owner: String) {
+        require(id > 0 && (rating == null || rating in 1..5))
+        request(
+                "books/bulk-set-rating",
+                "POST",
+                buildJsonObject {
+                        put("bookIds", buildJsonArray { add(id) })
+                        put("rating", rating?.let(::JsonPrimitive) ?: JsonNull)
+                    }
+                    .toString(),
+                expectedScope = owner,
+            )
+            .close()
+    }
+
+    fun bookCollections(owner: String): List<BookCollection> =
+        decode(request("collections", expectedScope = owner))
+
+    fun collectionMembership(collectionId: Int, bookId: Int, add: Boolean, owner: String) {
+        require(collectionId > 0 && bookId > 0)
+        request(
+                "collections/$collectionId/books",
+                if (add) "POST" else "DELETE",
+                buildJsonObject { put("bookIds", buildJsonArray { add(bookId) }) }.toString(),
+                expectedScope = owner,
+            )
+            .close()
+    }
+
     fun libraryGroups(
         kind: LibraryGroupKind,
         page: Int,

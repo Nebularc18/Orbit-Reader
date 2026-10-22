@@ -49,6 +49,15 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) :
                 setForeground(notification(bookId, "Preparing audiobook"))
                 val manifest = app.api.manifest(bookId, accountScope)
                 storage.markDownload(manifest)
+                val remaining =
+                    manifest.assets.sumOf { asset ->
+                        val file = storage.asset(bookId, asset)
+                        ((asset.sizeBytes ?: 0) -
+                                if (file.exists()) file.length()
+                                else java.io.File(file.path + ".part").length())
+                            .coerceAtLeast(0)
+                    }
+                app.offlineBudget.reserve(accountScope, "audio-$accountScope-$bookId", remaining)
                 val progress = DownloadProgress(manifest.assets)
                 manifest.assets.forEachIndexed { index, asset ->
                     val file = storage.asset(bookId, asset)
@@ -58,6 +67,7 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) :
                     progress.update(index, bytes)
                 }
                 suspend fun report(index: Int) {
+                    app.offlineBudget.check(accountScope)
                     val percent = progress.fraction?.let { "${(it * 100).toInt()}% · " } ?: ""
                     setProgress(
                         workDataOf(
@@ -88,6 +98,7 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) :
                     }
                     report(index)
                     var lastReport = 0L
+                    var lastBudgetBytes = 0L
                     val coroutineContext = currentCoroutineContext()
                     AudioTransfer()
                         .download(
@@ -102,6 +113,10 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) :
                             },
                             progress = { bytes, total ->
                                 progress.update(index, bytes, total)
+                                if (bytes - lastBudgetBytes >= 1024 * 1024) {
+                                    app.offlineBudget.check(accountScope)
+                                    lastBudgetBytes = bytes
+                                }
                                 if (SystemClock.elapsedRealtime() - lastReport >= 1000) {
                                     if (app.sessions.read()?.scope != accountScope)
                                         throw IOException("Download cancelled")
@@ -113,6 +128,8 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) :
                     report(index)
                 }
                 Result.success()
+            } catch (error: OfflineLimitReached) {
+                Result.failure(workDataOf("error" to error.message))
             } catch (error: ApiFailure) {
                 if (
                     app.sessions.read()?.scope != accountScope &&
@@ -135,6 +152,8 @@ class DownloadWorker(context: Context, parameters: WorkerParameters) :
                             "error" to "Download interrupted. Retry when your server is reachable."
                         )
                     )
+            } finally {
+                app.offlineBudget.release("audio-$accountScope-$bookId")
             }
         }
 

@@ -19,6 +19,7 @@ class OrbitApplication : Application() {
     val progressConflict = MutableStateFlow<Int?>(null)
     val sleepAtChapterEnd = MutableStateFlow(false)
     val sleepMinutes = MutableStateFlow(0)
+    val offlineBudget by lazy { app.bookorbit.community.download.OfflineBudget(this) }
     val downloadSlots = Semaphore(2)
     private val downloadLocks = Array(64) { Mutex() }
 
