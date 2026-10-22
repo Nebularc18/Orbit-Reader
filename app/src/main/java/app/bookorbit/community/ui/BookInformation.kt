@@ -2,6 +2,7 @@ package app.bookorbit.community.ui
 
 import android.text.format.Formatter
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -61,21 +62,46 @@ fun BookInformation(book: EbookDetail) {
                         ?.let { "Collections" to it.joinToString(", ") { entry -> entry.name } },
                 )
                 .filter { it.second.isNotBlank() }
-        fields.chunked(2).forEach { row ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                row.forEach { (label, value) ->
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            label,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(value, style = MaterialTheme.typography.bodyMedium)
+        if (fields.isNotEmpty()) Text("Book details", style = MaterialTheme.typography.titleLarge)
+        if (fields.isNotEmpty())
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                border =
+                    androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.outlineVariant,
+                    ),
+            ) {
+                Column {
+                    fields.chunked(2).forEachIndexed { index, row ->
+                        if (index > 0)
+                            HorizontalDivider(
+                                Modifier.padding(horizontal = 14.dp),
+                                color = MaterialTheme.colorScheme.outlineVariant,
+                            )
+                        Row(
+                            Modifier.fillMaxWidth().padding(14.dp),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        ) {
+                            row.forEach { (label, value) ->
+                                Column(
+                                    Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Text(
+                                        label,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(value, style = MaterialTheme.typography.bodyMedium)
+                                }
+                            }
+                            if (row.size == 1) Spacer(Modifier.weight(1f))
+                        }
                     }
                 }
-                if (row.size == 1) Spacer(Modifier.weight(1f))
             }
-        }
         book.personalNote
             ?.takeIf { it.isNotBlank() }
             ?.let {

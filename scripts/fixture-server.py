@@ -164,6 +164,21 @@ class Handler(BaseHTTPRequestHandler):
                 books.extend({'id': 2000 + i, 'title': f'Orbit Ebook {i:04}', 'authors': ['Orbit Test Reader']} for i in range(CATALOG_SIZE))
             query = data.get("q", "").casefold()
             items = [{"id": book["id"], "title": book["title"], "authors": book["authors"], "coverVersion": "fixture"} for book in books if query in (book["title"] + " " + " ".join(book["authors"])).casefold()]
+            status_values = next((rule.get('value', []) for rule in data.get('filter', {}).get('rules', []) if rule.get('field') == 'readStatus'), None)
+            if status_values is not None:
+                statuses = ['unread', 'reading', 'read', 'want_to_read', 'on_hold', 'rereading', 'skimmed', 'abandoned']
+                items = [row for row in items if statuses[row['id'] % len(statuses)] in status_values]
+            specs = data.get('sort', [{'field': 'title', 'dir': 'asc'}])
+            allowed_sorts = {'title', 'author', 'addedAt', 'series', 'seriesIndex', 'publishedDate', 'rating'}
+            if any(spec.get('field') not in allowed_sorts or spec.get('dir') not in {'asc', 'desc'} for spec in specs):
+                return self.send_json({}, 400)
+            def sort_value(row, field):
+                return {'title': row['title'].casefold(), 'author': (row['authors'] or [''])[0].casefold(),
+                        'addedAt': row['id'], 'series': row['id'] % 3, 'seriesIndex': row['id'],
+                        'publishedDate': row['id'] % 25, 'rating': row['id'] % 6}[field]
+            items.sort(key=lambda row: row['id'])
+            for spec in reversed(specs):
+                items.sort(key=lambda row: sort_value(row, spec['field']), reverse=spec['dir'] == 'desc')
             page, size = data['pagination']['page'], data['pagination']['size']
             return self.send_json({"items": items[page*size:(page+1)*size], "total": len(items), "page": page, "size": size})
         match=re.fullmatch(r"/api/v1/books/files/(10[1-5])/progress",self.path)
@@ -194,6 +209,39 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        match = re.fullmatch(r"/api/v1/(series|authors|collections|smart-scopes)", parsed.path)
+        if match:
+            kind = match[1]
+            rows = [{'id': i + 1, 'name': ('Quiet Orbit' if kind == 'series' and i == 0 else f'{kind.title()} {i + 1:03}'), 'bookCount': 5, 'readCount': 2 if kind == 'series' else None, 'coverBookIds': [2, 3] if kind == 'series' else [], 'coverBookId': 2 if kind == 'authors' else None, 'mediaType': 'books'} for i in range(max(3, CATALOG_SIZE))]
+            if kind in ['collections', 'smart-scopes']:
+                return self.send_json(rows)
+            q = query.get('q', [''])[0].casefold()
+            rows = [row for row in rows if q in row['name'].casefold()]
+            rows.sort(key=lambda row: row['name'], reverse=query.get('order', ['asc'])[0] == 'desc')
+            page, size = int(query.get('page', ['0'])[0]), int(query.get('size', ['30'])[0])
+            return self.send_json({'items': rows[page*size:(page+1)*size], 'total': len(rows), 'page': page, 'size': size})
+        match = re.fullmatch(r"/api/v1/(series|authors|collections|smart-scopes)/(\d+)/books", parsed.path)
+        if match:
+            rows = [dict(MANIFEST['book'], files=[{'id': 1, 'format': 'mp3'}], coverVersion='fixture', readStatus={'status': 'read'})]
+            rows.extend(dict(book, authors=['Orbit Test Reader'], coverVersion='fixture', readStatus={'status': 'unread'}) for book in [EBOOK, PDF_BOOK, COMIC_BOOK, CONVERTED_BOOK])
+            page, size = int(query.get('page', ['0'])[0]), int(query.get('size', ['30'])[0])
+            return self.send_json({'items': rows[page*size:(page+1)*size], 'total': len(rows), 'page': page, 'size': size})
+        if parsed.path == '/api/v1/user-statistics/activity-overview':
+            today = datetime.date.today()
+            days = [{'day': (today - datetime.timedelta(days=27-i)).isoformat(), 'totalSeconds': (i % 5)*1200, 'readingSeconds': (i % 5)*400, 'listeningSeconds': (i % 5)*800, 'sessionsCount': i % 5} for i in range(28)]
+            return self.send_json({'timezone': 'UTC', 'snapshot': {'today': days[-1], 'lastSevenDays': {'totalSeconds': 14400, 'readingSeconds': 4800, 'listeningSeconds': 9600}, 'previousSevenDays': {'totalSeconds': 10800, 'readingSeconds': 3600, 'listeningSeconds': 7200}, 'currentStreak': 3, 'longestStreak': 7, 'completedBooksYtd': 4}, 'dailyActivity': {'days': days}, 'goal': {'year': today.year, 'goalBooks': 12, 'completedBooks': 4, 'projectedBooks': 6, 'status': 'behind'}, 'completion': {'months': [{'year': today.year, 'month': m, 'count': m % 3} for m in range(1, today.month+1)]}})
+        if parsed.path == '/api/v1/user-statistics/reading-source-distribution':
+            return self.send_json({'totalSeconds': 28800, 'slices': [{'bucket': 'bookorbit', 'readingSeconds': 7200}, {'bucket': 'android', 'readingSeconds': 21600}]})
+        if parsed.path == '/api/v1/user-statistics/session-timeline':
+            year, week = int(query.get('year', ['2026'])[0]), int(query.get('week', ['1'])[0])
+            start = datetime.date.fromisocalendar(year, week, 1)
+            rows = [{'sessionId': i+1, 'bookId': 1 if i%2 else 2, 'bookTitle': MANIFEST['book']['title'] if i%2 else EBOOK['title'], 'bookFormat': 'mp3' if i%2 else 'epub', 'bookSource': 'android', 'startedAt': f'{start.isoformat()}T12:00:00Z', 'endedAt': f'{start.isoformat()}T12:20:00Z', 'durationSeconds': 1200} for i in range(5)]
+            return self.send_json({'year': year, 'week': week, 'weekStart': start.isoformat(), 'weekEnd': (start+datetime.timedelta(days=6)).isoformat(), 'items': rows})
+        if parsed.path == "/api/v1/dashboard/widgets/reading-goal":
+            return self.send_json({'goalBooks': 12, 'completedBooks': 4, 'year': 2026})
+        if parsed.path == "/api/v1/dashboard/widgets/reading-streak":
+            return self.send_json({'currentStreak': 3, 'longestStreak': 7, 'lastSevenDays': [False, True, False, False, True, True, True]})
         match = re.fullmatch(r"/api/v1/dashboard/scrollers/(continue-listening|continue-reading|up-next-in-series)", parsed.path)
         if match:
             kind = match[1]

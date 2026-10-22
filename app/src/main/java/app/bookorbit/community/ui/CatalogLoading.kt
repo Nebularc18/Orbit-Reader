@@ -24,3 +24,33 @@ fun LazyListScope.catalogLoading(state: LoadState, retry: () -> Unit, key: Strin
             }
         }
 }
+
+fun androidx.compose.foundation.lazy.grid.LazyGridScope.catalogLoading(
+    state: LoadState,
+    retry: () -> Unit,
+    key: String,
+) {
+    if (state is LoadState.Loading || state is LoadState.Error)
+        item(
+            key = key,
+            span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) },
+        ) {
+            Column(Modifier.fillMaxWidth().padding(vertical = 16.dp)) {
+                if (state is LoadState.Loading) {
+                    if (key == "refresh") LibraryLoadingState()
+                    else LinearProgressIndicator(Modifier.fillMaxWidth())
+                } else {
+                    LibraryErrorState(
+                        (state as LoadState.Error).error.let {
+                            if (it is ApiFailure && it.status == 404)
+                                "This view is unavailable. Check your server version and library access."
+                            else
+                                it.message
+                                    ?: "Could not load books. Check your connection and try again."
+                        },
+                        retry,
+                    )
+                }
+            }
+        }
+}

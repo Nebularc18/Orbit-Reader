@@ -36,7 +36,7 @@ fun PlaybackTimeline(
     Column(Modifier.fillMaxWidth()) {
         Text(
             label,
-            style = MaterialTheme.typography.labelLarge,
+            style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Slider(
@@ -49,7 +49,7 @@ fun PlaybackTimeline(
                 Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
                     contentDescription = "$label timeline"
                 },
-            thumb = { Box(Modifier.size(16.dp).background(progressColor, CircleShape)) },
+            thumb = { Box(Modifier.size(12.dp).background(progressColor, CircleShape)) },
             track = { state ->
                 Canvas(Modifier.fillMaxWidth().height(4.dp)) {
                     val fraction = (state.value / state.valueRange.endInclusive).coerceIn(0f, 1f)
@@ -92,7 +92,7 @@ fun PlaybackTimeline(
                                     else "Show time remaining",
                                 onClick = onTimeToggle,
                             )
-                            .padding(vertical = 4.dp)
+                            .padding(horizontal = 4.dp)
                     else Modifier,
                 style = MaterialTheme.typography.labelMedium,
             )

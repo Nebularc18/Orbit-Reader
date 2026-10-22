@@ -117,13 +117,23 @@ class AudioStorage(context: Context, val scope: String) {
         File(bookDir(manifest.book.id), "download").writeText("")
     }
 
-    fun downloads(page: Int): List<StoredDownload> =
-        storedBooks()
-            .filter { File(bookDir(it.book.id), "download").exists() || audioBytes(it.book.id) > 0 }
+    fun downloads(page: Int, sort: CatalogSort? = null): List<StoredDownload> {
+        val candidates =
+            storedBooks()
+                .filter {
+                    File(bookDir(it.book.id), "download").exists() || audioBytes(it.book.id) > 0
+                }
+                .map { BookCard(it.book.id, it.book.title, it.book.authors) }
+        val ordered =
+            if (sort == null) candidates else sortLocalBooks(candidates, sort).asSequence()
+        return ordered
             .drop((page - 1) * 30)
             .take(30)
-            .map { StoredDownload(it, audioBytes(it.book.id), downloaded(it)) }
+            .mapNotNull { card ->
+                manifest(card.id)?.let { StoredDownload(it, audioBytes(card.id), downloaded(it)) }
+            }
             .toList()
+    }
 
     fun audioBytes(bookId: Int): Long =
         bookDir(bookId)

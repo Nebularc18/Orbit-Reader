@@ -2,7 +2,10 @@ package app.bookorbit.community.reader
 
 import android.content.Context
 import android.util.AtomicFile
+import app.bookorbit.community.data.BookCard
+import app.bookorbit.community.data.CatalogSort
 import app.bookorbit.community.data.EbookFile
+import app.bookorbit.community.data.sortLocalBooks
 import app.bookorbit.community.data.wireJson
 import java.io.File
 import java.io.IOException
@@ -144,20 +147,33 @@ class EbookStorage(context: Context, scope: String) {
                 .toList()
         }
 
-    fun shelfBooks(page: Int): List<SavedEbook> =
+    fun shelfBooks(page: Int, sort: CatalogSort? = null): List<SavedEbook> =
         synchronized(lock) {
-            root
-                .listFiles()
-                .orEmpty()
-                .asSequence()
-                .filter { it.isDirectory }
-                .sortedBy { it.name.toIntOrNull() ?: Int.MAX_VALUE }
-                .mapNotNull { it.name.toIntOrNull()?.let { id -> book(id) } }
-                .filter { ready(it.file) }
-                .distinctBy { it.bookId }
-                .drop((page - 1) * 30)
-                .take(30)
-                .toList()
+            val candidates =
+                root
+                    .listFiles()
+                    .orEmpty()
+                    .asSequence()
+                    .filter { it.isDirectory }
+                    .sortedBy { it.name.toIntOrNull() ?: Int.MAX_VALUE }
+                    .mapNotNull { it.name.toIntOrNull()?.let { id -> book(id) } }
+                    .filter { ready(it.file) }
+                    .distinctBy { it.bookId }
+            if (sort == null) candidates.drop((page - 1) * 30).take(30).toList()
+            else {
+                val files = mutableMapOf<Int, Int>()
+                val cards =
+                    candidates.map {
+                        files[it.bookId] = it.file.id
+                        BookCard(it.bookId, it.title, it.authors)
+                    }
+                sortLocalBooks(cards, sort)
+                    .asSequence()
+                    .drop((page - 1) * 30)
+                    .take(30)
+                    .mapNotNull { files[it.id]?.let { fileId -> book(fileId) } }
+                    .toList()
+            }
         }
 
     fun recentlyRead(): List<SavedEbook> =

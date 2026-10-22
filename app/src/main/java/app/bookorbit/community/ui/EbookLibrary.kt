@@ -5,18 +5,22 @@ import android.text.format.Formatter
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.*
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -42,8 +46,11 @@ fun EbookLibrary(
     val model: EbookLibraryViewModel = viewModel(key = "ebooks-${account.scope}")
     val state by model.state.collectAsStateWithLifecycle()
     val catalog = model.catalog.collectAsLazyPagingItems()
-    val catalogScroll = rememberLazyListState()
-    LaunchedEffect(state.query, state.offline) { catalogScroll.scrollToItem(0) }
+    var grid by rememberSaveable { mutableStateOf(true) }
+    val catalogScroll = rememberLazyGridState()
+    LaunchedEffect(state.query, state.offline, grid, state.sort, state.readFilter) {
+        catalogScroll.scrollToItem(0)
+    }
     LaunchedEffect(openBookId) {
         openBookId?.let {
             model.select(it, openDirectly = true)
@@ -82,24 +89,20 @@ fun EbookLibrary(
         }
     }
     Column(modifier.fillMaxSize().padding(horizontal = 20.dp)) {
-        Text(
-            "Your reading space",
-            style = MaterialTheme.typography.headlineMedium,
-            fontFamily = FontFamily.Serif,
-        )
-        Text("Ebooks and comics from your library.", Modifier.padding(top = 6.dp, bottom = 12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            FilterChip(
-                selected = !state.offline,
-                onClick = { model.offline(false) },
-                label = { Text("Library") },
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            SegmentPicker(
+                listOf("Library", "On device"),
+                if (state.offline) 1 else 0,
+                { model.offline(it == 1) },
+                Modifier.weight(1f),
             )
-            FilterChip(
-                selected = state.offline,
-                onClick = { model.offline(true) },
-                label = { Text("On device") },
-            )
-            TextButton(onClick = { model.browse() }) { Text("Refresh ebooks") }
+            IconButton(onClick = { model.browse() }) {
+                Icon(Icons.Rounded.Refresh, "Refresh ebooks", Modifier.size(20.dp))
+            }
         }
         if (!state.offline)
             OutlinedTextField(
@@ -109,7 +112,23 @@ fun EbookLibrary(
                 leadingIcon = { Icon(Icons.Rounded.Search, null) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                colors =
+                    OutlinedTextFieldDefaults.colors(
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                    ),
             )
+        CatalogControls(
+            state.sort,
+            state.readFilter,
+            state.offline,
+            grid,
+            model::sort,
+            model::readFilter,
+        ) {
+            grid = !grid
+        }
         if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         state.error?.let {
             Text(
@@ -123,52 +142,38 @@ fun EbookLibrary(
                 catalog.loadState.refresh is LoadState.NotLoading &&
                 !state.busy
         )
-            Text(
-                if (state.offline)
-                    "No ebooks saved yet. Open a book from Library to keep a copy here."
-                else "No supported ebooks or comics found.",
-                Modifier.padding(vertical = 24.dp),
+            LibraryEmptyState(
+                if (state.offline) "Take a book with you" else "No matching books",
+                if (state.offline) "Open a book from Library to keep a copy here."
+                else "Try another search or reading status.",
             )
-        LazyColumn(
-            Modifier.weight(1f),
+        LazyVerticalGrid(
+            columns = if (grid) GridCells.Adaptive(100.dp) else GridCells.Fixed(1),
+            modifier = Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             state = catalogScroll,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(if (grid) 20.dp else 8.dp),
             contentPadding = PaddingValues(vertical = 16.dp),
         ) {
             catalogLoading(catalog.loadState.refresh, catalog::retry, "refresh")
             catalogLoading(catalog.loadState.prepend, catalog::retry, "prepend")
             items(count = catalog.itemCount, key = catalog.itemKey { it.id }) { index ->
                 val book = catalog[index] ?: return@items
-                Card(
-                    Modifier.fillMaxWidth()
-                        .combinedClickable(
-                            enabled = !state.busy && preparing == null,
-                            onClick = { model.select(book.id, openDirectly = true) },
-                            onLongClick = { model.select(book.id) },
-                            onLongClickLabel = "Book options",
-                        )
-                ) {
-                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        BookCover(
-                            app,
-                            account,
-                            book.id,
-                            book.coverVersion,
-                            Modifier.size(68.dp, 88.dp),
-                            ebook = true,
-                        )
-                        Column(Modifier.padding(start = 16.dp)) {
-                            Text(
-                                book.title ?: "Untitled",
-                                style = MaterialTheme.typography.titleMedium,
-                            )
-                            Text(
-                                book.authors.joinToString(", "),
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                    }
-                }
+                CatalogEntry(
+                    app,
+                    account,
+                    book,
+                    grid,
+                    ebook = true,
+                    modifier =
+                        Modifier.fillMaxWidth()
+                            .combinedClickable(
+                                enabled = !state.busy && preparing == null,
+                                onClick = { model.select(book.id, openDirectly = true) },
+                                onLongClick = { model.select(book.id) },
+                                onLongClickLabel = "Book options",
+                            ),
+                )
             }
             catalogLoading(catalog.loadState.append, catalog::retry, "append")
         }
@@ -181,6 +186,7 @@ fun EbookLibrary(
                 onDismissRequest = model::closeDetail,
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {
+                SystemBarAppearance(MaterialTheme.colorScheme.surface.luminance() > .5f)
                 Column(
                     Modifier.fillMaxWidth()
                         .weight(1f)
@@ -189,16 +195,15 @@ fun EbookLibrary(
                         .padding(bottom = 24.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Text(book.title ?: "Untitled", style = MaterialTheme.typography.headlineMedium)
-                    BookCover(
+                    BookHero(
                         app,
                         account,
                         book.id,
                         book.coverVersion,
-                        Modifier.size(120.dp, 160.dp),
+                        book.title ?: "Untitled",
+                        book.authors.joinToString(", ") { it.name },
                         ebook = true,
                     )
-                    Text(book.authors.joinToString(", ") { it.name })
                     Text(
                         "Opening a book saves a copy for offline reading. Use Sync in the reader to share progress."
                     )

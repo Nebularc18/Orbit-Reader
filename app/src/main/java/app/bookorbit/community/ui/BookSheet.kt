@@ -11,7 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.session.MediaController
@@ -61,31 +61,20 @@ fun BookSheet(
         onDismissRequest = model::closeDetail,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {
+        SystemBarAppearance(MaterialTheme.colorScheme.surface.luminance() > .5f)
         LazyColumn(
             Modifier.fillMaxWidth().weight(1f).padding(horizontal = 24.dp),
             contentPadding = PaddingValues(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
-                BookCover(
+                BookHero(
                     app,
                     state.session!!,
                     book.book.id,
                     state.details?.coverVersion ?: book.revision,
-                    Modifier.size(152.dp, 184.dp),
-                )
-            }
-            item {
-                Text(
                     book.book.title,
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontFamily = FontFamily.Serif,
-                )
-            }
-            item {
-                Text(
                     book.book.authors.joinToString(", "),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             if (book.book.narrators.isNotEmpty())
@@ -105,7 +94,7 @@ fun BookSheet(
                 Button(
                     onClick = onPlay,
                     enabled = controller != null,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
                 ) {
                     Text("Listen now")
                 }

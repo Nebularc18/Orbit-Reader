@@ -35,6 +35,234 @@ class OrbitApiTest {
     }
 
     @Test
+    fun `library group endpoints use bounded pages encoded queries and account scope`() {
+        val owner = store.read()!!.scope
+        for (kind in listOf(LibraryGroupKind.SERIES, LibraryGroupKind.AUTHORS)) {
+            server.enqueue(
+                MockResponse()
+                    .setBody(
+                        """{"items":[{"id":7,"name":"Orbit","bookCount":3,"coverBookIds":[2]}],"total":31,"page":1,"size":30}"""
+                    )
+            )
+            assertEquals(
+                2,
+                api.libraryGroups(kind, 2, "A & B", GroupOrder.MOST_BOOKS, owner)
+                    .items
+                    .single()
+                    .coverId,
+            )
+            val url = server.takeRequest().requestUrl!!
+            assertEquals("/books/api/v1/${kind.path}", url.encodedPath)
+            assertEquals("1", url.queryParameter("page"))
+            assertEquals("30", url.queryParameter("size"))
+            assertEquals("A & B", url.queryParameter("q"))
+            assertEquals("bookCount", url.queryParameter("sort"))
+            assertEquals("desc", url.queryParameter("order"))
+        }
+        assertThrows(ApiFailure::class.java) {
+            api.libraryGroups(LibraryGroupKind.AUTHORS, 1, "", GroupOrder.NAME, "other")
+        }
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test
+    fun `saved lists filter podcast collections before paging and preserve stable name sorting`() {
+        val rows =
+            (1..35).joinToString(",") { """{"id":$it,"name":"Shelf ${100-it}","bookCount":2}""" }
+        for (page in 1..2) {
+            server.enqueue(
+                MockResponse()
+                    .setBody("""[$rows,{"id":100,"name":"Shelf podcast","mediaType":"podcasts"}]""")
+            )
+            val result =
+                api.libraryGroups(
+                    LibraryGroupKind.COLLECTIONS,
+                    page,
+                    "Shelf",
+                    GroupOrder.NAME_DESC,
+                    store.read()!!.scope,
+                )
+            assertEquals(35, result.total)
+            assertEquals(if (page == 1) 30 else 5, result.items.size)
+            assertEquals(if (page == 1) 1 else 31, result.items.first().id)
+            assertEquals("/books/api/v1/collections", server.takeRequest().path)
+        }
+    }
+
+    @Test
+    fun `group book routes retain volume order and bounded pages without collapsing series`() {
+        for (kind in LibraryGroupKind.entries) {
+            server.enqueue(
+                MockResponse()
+                    .setBody(
+                        """{"items":[{"id":2,"files":[{"id":101,"format":"epub"}],"readStatus":{"status":"read"}}],"total":1,"page":0,"size":30}"""
+                    )
+            )
+            val book = api.libraryGroupBooks(kind, 7, 1, store.read()!!.scope).items.single()
+            assertTrue(book.files.single().supported)
+            assertEquals("read", book.readStatus!!.status)
+            val url = server.takeRequest().requestUrl!!
+            assertEquals("/books/api/v1/${kind.path}/7/books", url.encodedPath)
+            assertEquals("0", url.queryParameter("page"))
+            assertEquals("30", url.queryParameter("size"))
+            if (kind == LibraryGroupKind.SERIES)
+                assertEquals("seriesIndex", url.queryParameter("sort"))
+            if (kind == LibraryGroupKind.AUTHORS || kind == LibraryGroupKind.COLLECTIONS)
+                assertEquals("false", url.queryParameter("collapseSeries"))
+        }
+    }
+
+    @Test
+    fun `activity contracts accept empty history and an unset goal without inventing values`() {
+        val owner = store.read()!!.scope
+        server.enqueue(
+            MockResponse()
+                .setBody(
+                    """{"timezone":"UTC","snapshot":{"today":{},"lastSevenDays":{"totalSeconds":7200,"readingSeconds":1200,"listeningSeconds":6000},"previousSevenDays":{},"currentStreak":2,"longestStreak":8,"completedBooksYtd":4},"dailyActivity":{"days":[]},"goal":{"year":2026,"goalBooks":null,"completedBooks":4,"projectedBooks":22.5}}"""
+                )
+        )
+        val overview = api.activityOverview(owner)
+        assertNull(overview.goal.goalBooks)
+        assertEquals(22.5, overview.goal.projectedBooks!!, 0.0)
+        assertEquals(6000L, overview.snapshot.lastSevenDays.listeningSeconds)
+        assertEquals("/books/api/v1/user-statistics/activity-overview", server.takeRequest().path)
+        server.enqueue(
+            MockResponse()
+                .setBody(
+                    """{"year":2026,"week":43,"weekStart":"2026-10-19","weekEnd":"2026-10-25","items":[]}"""
+                )
+        )
+        assertTrue(api.activityTimeline(2026, 43, owner).items.isEmpty())
+        assertEquals(
+            "/books/api/v1/user-statistics/session-timeline?year=2026&week=43",
+            server.takeRequest().path,
+        )
+        server.enqueue(
+            MockResponse()
+                .setBody(
+                    """{"totalSeconds":7200,"slices":[{"bucket":"android","readingSeconds":7200}]}"""
+                )
+        )
+        assertEquals("android", api.activitySources(owner).slices.single().bucket)
+        assertEquals(
+            "/books/api/v1/user-statistics/reading-source-distribution?days=28",
+            server.takeRequest().path,
+        )
+        assertThrows(ApiFailure::class.java) { api.activityOverview("other") }
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test
+    fun `status filters combine with formats search sort and pagination`() {
+        for (ebooks in listOf(false, true)) for (filter in CatalogReadFilter.entries) {
+            server.enqueue(MockResponse().setBody("""{"items":[],"total":0,"page":1,"size":30}"""))
+            api.books(2, "Orbit", ebooks, store.read()!!.scope, CatalogSort.AUTHOR_DESC, filter)
+            val body = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+            val rules =
+                body.getValue("filter").jsonObject.getValue("rules").jsonArray.map { it.jsonObject }
+            assertEquals(
+                "AND",
+                body.getValue("filter").jsonObject.getValue("join").jsonPrimitive.content,
+            )
+            assertEquals("Orbit", body.getValue("q").jsonPrimitive.content)
+            assertEquals(
+                1,
+                body.getValue("pagination").jsonObject.getValue("page").jsonPrimitive.int,
+            )
+            assertEquals(
+                "author",
+                body
+                    .getValue("sort")
+                    .jsonArray
+                    .first()
+                    .jsonObject
+                    .getValue("field")
+                    .jsonPrimitive
+                    .content,
+            )
+            val format = rules.single { it.getValue("field").jsonPrimitive.content == "format" }
+            assertTrue(
+                format.getValue("value").jsonArray.any {
+                    it.jsonPrimitive.content == if (ebooks) "epub" else "m4b"
+                }
+            )
+            val status = rules.filter { it.getValue("field").jsonPrimitive.content == "readStatus" }
+            if (filter == CatalogReadFilter.ALL) assertTrue(status.isEmpty())
+            else {
+                assertEquals(
+                    "includesAny",
+                    status.single().getValue("operator").jsonPrimitive.content,
+                )
+                assertEquals(
+                    filter.statuses,
+                    status.single().getValue("value").jsonArray.map { it.jsonPrimitive.content },
+                )
+            }
+        }
+        assertEquals(listOf("unread"), CatalogReadFilter.UNREAD.statuses)
+        assertEquals(listOf("read"), CatalogReadFilter.FINISHED.statuses)
+        assertEquals(listOf("reading", "rereading"), CatalogReadFilter.IN_PROGRESS.statuses)
+    }
+
+    @Test
+    fun `catalog sorts use supported wire fields and keep search and ordering on later pages`() {
+        for (sort in CatalogSort.entries) for (page in 1..2) {
+            server.enqueue(
+                MockResponse().setBody("""{"items":[],"total":100,"page":0,"size":30}""")
+            )
+            api.books(page, "Writer", ebooks = true, owner = store.read()!!.scope, sort = sort)
+            val body = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+            val fields =
+                body.getValue("sort").jsonArray.map {
+                    it.jsonObject.let { row ->
+                        row.getValue("field").jsonPrimitive.content to
+                            row.getValue("dir").jsonPrimitive.content
+                    }
+                }
+            assertEquals(sort.fields, fields)
+            assertEquals(
+                page - 1,
+                body.getValue("pagination").jsonObject.getValue("page").jsonPrimitive.int,
+            )
+            assertEquals("Writer", body.getValue("q").jsonPrimitive.content)
+            assertEquals(setOf("sort", "pagination", "collapseSeries", "q", "filter"), body.keys)
+        }
+        assertEquals(
+            listOf("series" to "asc", "seriesIndex" to "asc", "title" to "asc"),
+            CatalogSort.SERIES.fields,
+        )
+    }
+
+    @Test
+    fun `dashboard activity parses server goal and streak without inventing a missing goal`() {
+        val owner = store.read()!!.scope
+        server.enqueue(
+            MockResponse().setBody("""{"goalBooks":null,"completedBooks":4,"year":2026}""")
+        )
+        val goal = api.readingGoal(owner)
+        assertNull(goal.goalBooks)
+        assertEquals(4, goal.completedBooks)
+        assertEquals("/books/api/v1/dashboard/widgets/reading-goal", server.takeRequest().path)
+        server.enqueue(
+            MockResponse()
+                .setBody(
+                    """{"currentStreak":3,"longestStreak":9,"lastSevenDays":[false,false,false,false,true,true,true]}"""
+                )
+        )
+        val streak = api.readingStreak(owner)
+        assertEquals(3, streak.currentStreak)
+        assertEquals(9, streak.longestStreak)
+        assertEquals(3, streak.lastSevenDays.count { it })
+        assertEquals("/books/api/v1/dashboard/widgets/reading-streak", server.takeRequest().path)
+        assertEquals(0, server.requestCount - 2)
+        try {
+            api.readingGoal("other-account")
+            fail("Expected scope rejection")
+        } catch (_: ApiFailure) {}
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test
     fun `book information parses web metadata while catalog calls enforce account scope`() {
         val owner = store.read()!!.scope
         server.enqueue(
