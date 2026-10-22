@@ -42,6 +42,7 @@ fun Dashboard(
     onAppearance: () -> Unit = {},
     onActivity: () -> Unit = {},
     onLibrary: () -> Unit = {},
+    onServers: () -> Unit = {},
 ) {
     val model: DashboardViewModel = viewModel(key = "dashboard-${account.scope}")
     val state by model.state.collectAsStateWithLifecycle()
@@ -70,7 +71,10 @@ fun Dashboard(
             ) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
-                        "ORBIT READER",
+                        serverLabel(account),
+                        modifier = Modifier.clickable(onClick = onServers),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.labelSmall,
                         letterSpacing = 1.6.sp,
                         color = MaterialTheme.colorScheme.primary,

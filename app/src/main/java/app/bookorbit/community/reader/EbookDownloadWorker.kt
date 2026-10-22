@@ -11,6 +11,7 @@ import androidx.work.*
 import app.bookorbit.community.OrbitApplication
 import app.bookorbit.community.R
 import app.bookorbit.community.data.ApiFailure
+import app.bookorbit.community.data.hasConnection
 import java.io.File
 import java.io.IOException
 import java.util.zip.ZipEntry
@@ -66,7 +67,8 @@ class EbookDownloadWorker(context: Context, params: WorkerParameters) :
     }
 
     private suspend fun download(app: OrbitApplication, owner: String, fileId: Int): Result {
-        if (app.sessions.read()?.scope != owner) return Result.failure()
+        if (app.sessions.read()?.scope != owner)
+            return if (app.sessions.hasConnection(owner)) Result.retry() else Result.failure()
         val storage = EbookStorage(app, owner)
         val book = storage.book(fileId) ?: return Result.failure()
         val target = storage.content(book.file)
@@ -189,12 +191,15 @@ class EbookDownloadWorker(context: Context, params: WorkerParameters) :
                         epub = book.file.format?.lowercase() != "cbz",
                     )
             }
-            if (app.sessions.read()?.scope != owner) return Result.failure()
+            if (app.sessions.read()?.scope != owner)
+                return if (app.sessions.hasConnection(owner)) Result.retry() else Result.failure()
             if (!partial.renameTo(target)) throw IOException()
             return Result.success()
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
+            if (app.sessions.read()?.scope != owner && app.sessions.hasConnection(owner))
+                return Result.retry()
             if (error is IOException && error !is ApiFailure && runAttemptCount < 3)
                 return Result.retry()
             return Result.failure(

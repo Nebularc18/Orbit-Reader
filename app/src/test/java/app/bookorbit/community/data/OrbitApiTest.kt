@@ -35,6 +35,64 @@ class OrbitApiTest {
     }
 
     @Test
+    fun `two server logins retain credentials and route only the active account`() {
+        val first = store.read()!!
+        val secondServer = MockWebServer().apply { start() }
+        try {
+            secondServer.enqueue(
+                MockResponse()
+                    .setBody(
+                        """{"accessToken":"second-access","refreshToken":"second-refresh","user":{"id":7,"username":"reader"}}"""
+                    )
+            )
+            val second = api.login(secondServer.url("/other").toString(), "reader", "test-only")
+            assertEquals(2, store.connections().size)
+            assertEquals(first, store.connections().first { it.scope == first.scope })
+            assertEquals("/other/api/v1/auth/login", secondServer.takeRequest().path)
+            assertThrows(ApiFailure::class.java) { api.books(1, "", owner = first.scope) }
+            assertEquals(0, server.requestCount)
+            assertEquals(first, api.switchConnection(first.scope))
+            server.enqueue(MockResponse().setBody("""{"items":[],"total":0,"page":0,"size":30}"""))
+            api.books(1, "", owner = first.scope)
+            assertEquals("Bearer old-access", server.takeRequest().getHeader("Authorization"))
+            api.switchConnection(second.scope)
+            secondServer.enqueue(MockResponse().setResponseCode(401))
+            secondServer.enqueue(
+                MockResponse()
+                    .setBody(
+                        """{"accessToken":"rotated-second","refreshToken":"rotated-refresh"}"""
+                    )
+            )
+            secondServer.enqueue(
+                MockResponse().setBody("""{"items":[],"total":0,"page":0,"size":30}""")
+            )
+            api.books(1, "", owner = second.scope)
+            assertEquals(
+                "Bearer second-access",
+                secondServer.takeRequest().getHeader("Authorization"),
+            )
+            assertEquals("/other/api/v1/auth/refresh", secondServer.takeRequest().path)
+            assertEquals(
+                "Bearer rotated-second",
+                secondServer.takeRequest().getHeader("Authorization"),
+            )
+            api.switchConnection(first.scope)
+            assertEquals(first, store.read())
+            assertEquals(
+                "rotated-refresh",
+                store.connections().single { it.scope == second.scope }.refreshToken,
+            )
+            server.enqueue(MockResponse().setResponseCode(204))
+            api.logout()
+            assertEquals(second.scope, store.read()!!.scope)
+            assertEquals("/books/api/v1/auth/logout", server.takeRequest().path)
+            assertEquals(1, store.connections().size)
+        } finally {
+            secondServer.shutdown()
+        }
+    }
+
+    @Test
     fun `library group endpoints use bounded pages encoded queries and account scope`() {
         val owner = store.read()!!.scope
         for (kind in listOf(LibraryGroupKind.SERIES, LibraryGroupKind.AUTHORS)) {
@@ -635,10 +693,21 @@ class OrbitApiTest {
     }
 }
 
-private class MemorySessions(private var value: Session?) : SessionStore {
-    override fun read() = value
+private class MemorySessions(value: Session?) : SessionStore {
+    private var registry =
+        if (value == null) SessionConnections() else SessionConnections().save(value)
+
+    override fun read() = registry.active
 
     override fun save(session: Session?) {
-        value = session
+        registry = registry.save(session)
+    }
+
+    override fun connections() = registry.saved
+
+    override fun activate(scope: String): Boolean {
+        if (registry.saved.none { it.scope == scope }) return false
+        registry = registry.activate(scope)
+        return true
     }
 }

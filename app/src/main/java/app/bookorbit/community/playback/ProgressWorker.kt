@@ -15,7 +15,9 @@ class ProgressWorker(context: Context, parameters: WorkerParameters) :
             val app = applicationContext as OrbitApplication
             val scope = inputData.getString("scope") ?: return@withContext Result.failure()
             val bookId = inputData.getInt("bookId", 0)
-            if (app.sessions.read()?.scope != scope) return@withContext Result.failure()
+            if (app.sessions.read()?.scope != scope)
+                return@withContext if (app.sessions.hasConnection(scope)) Result.retry()
+                else Result.failure()
             val storage = AudioStorage(app, scope)
             try {
                 repeat(3) {
@@ -27,6 +29,8 @@ class ProgressWorker(context: Context, parameters: WorkerParameters) :
                 }
                 Result.retry()
             } catch (error: ApiFailure) {
+                if (app.sessions.read()?.scope != scope && app.sessions.hasConnection(scope))
+                    return@withContext Result.retry()
                 Result.failure(workDataOf("error" to error.message))
             } catch (_: IOException) {
                 Result.retry()

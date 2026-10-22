@@ -19,6 +19,7 @@ import java.io.IOException
 import java.time.Instant
 import kotlinx.coroutines.*
 
+const val PAUSE_CONNECTION = "orbit.pause-connection"
 const val OPEN_BOOK = "orbit.open"
 const val SLEEP_TIMER = "orbit.sleep"
 const val RELOAD_LISTENING = "orbit.listening"
@@ -136,6 +137,7 @@ class PlaybackService : MediaSessionService() {
                                 .setAvailableSessionCommands(
                                     MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
                                         .buildUpon()
+                                        .add(SessionCommand(PAUSE_CONNECTION, Bundle.EMPTY))
                                         .add(SessionCommand(OPEN_BOOK, Bundle.EMPTY))
                                         .add(SessionCommand(SLEEP_TIMER, Bundle.EMPTY))
                                         .add(SessionCommand(RELOAD_LISTENING, Bundle.EMPTY))
@@ -151,6 +153,34 @@ class PlaybackService : MediaSessionService() {
                             args: Bundle,
                         ): ListenableFuture<SessionResult> {
                             when (customCommand.customAction) {
+                                PAUSE_CONNECTION -> {
+                                    val result =
+                                        com.google.common.util.concurrent.SettableFuture.create<
+                                            SessionResult
+                                        >()
+                                    scope.launch {
+                                        try {
+                                            openJob?.cancelAndJoin()
+                                            cancelSleepTimer()
+                                            player.pause()
+                                            capture()
+                                            saveJob?.join()
+                                            listeningJob?.join()
+                                            player.stop()
+                                            player.clearMediaItems()
+                                            manifest = null
+                                            accountScope = null
+                                            app.currentManifest.value = null
+                                            app.progressConflict.value = null
+                                            app.playbackMessage.value = null
+                                            result.set(SessionResult(SessionResult.RESULT_SUCCESS))
+                                        } catch (error: Exception) {
+                                            result.setException(error)
+                                        }
+                                    }
+                                    return result
+                                }
+
                                 OPEN_BOOK -> {
                                     openJob?.cancel()
                                     openJob =
