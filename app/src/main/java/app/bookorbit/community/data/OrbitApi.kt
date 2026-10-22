@@ -143,12 +143,93 @@ class OrbitApi(val sessions: SessionStore) {
             }
         }
 
+    fun readingGoal(owner: String): ReadingGoal =
+        decode(request("dashboard/widgets/reading-goal", expectedScope = owner))
+
+    fun readingStreak(owner: String): ReadingStreak =
+        decode(request("dashboard/widgets/reading-streak", expectedScope = owner))
+
     fun dashboard(type: String, owner: String): DashboardShelf {
         require(type in setOf("continue-listening", "continue-reading", "up-next-in-series"))
         return decode(request("dashboard/scrollers/$type?limit=10", expectedScope = owner))
     }
 
-    fun books(page: Int, query: String, ebooks: Boolean = false, owner: String? = null): BooksPage {
+    fun libraryGroups(
+        kind: LibraryGroupKind,
+        page: Int,
+        query: String,
+        order: GroupOrder,
+        owner: String,
+    ): LibraryGroupsPage {
+        require(page > 0)
+        val q = java.net.URLEncoder.encode(query.take(500), "UTF-8")
+        if (kind == LibraryGroupKind.SERIES || kind == LibraryGroupKind.AUTHORS)
+            return decode(
+                request(
+                    "${kind.path}?page=${page - 1}&size=30&q=$q&sort=${order.field}&order=${order.direction}",
+                    expectedScope = owner,
+                )
+            )
+        val groups: List<LibraryGroup> = decode(request(kind.path, expectedScope = owner))
+        val filtered =
+            groups.filter {
+                it.mediaType != "podcasts" && it.name.contains(query, ignoreCase = true)
+            }
+        val sorted =
+            when (order) {
+                GroupOrder.NAME ->
+                    filtered.sortedWith(
+                        compareBy<LibraryGroup> { it.name.lowercase() }.thenBy { it.id }
+                    )
+                GroupOrder.NAME_DESC ->
+                    filtered.sortedWith(
+                        compareByDescending<LibraryGroup> { it.name.lowercase() }.thenBy { it.id }
+                    )
+                else -> filtered
+            }
+        return LibraryGroupsPage(sorted.drop((page - 1) * 30).take(30), sorted.size, page - 1, 30)
+    }
+
+    fun libraryGroupBooks(kind: LibraryGroupKind, id: Int, page: Int, owner: String): BooksPage {
+        require(id > 0 && page > 0)
+        val options =
+            when (kind) {
+                LibraryGroupKind.SERIES -> "&sort=seriesIndex&order=asc"
+                LibraryGroupKind.AUTHORS -> "&sort=title&order=asc&collapseSeries=false"
+                LibraryGroupKind.COLLECTIONS -> "&collapseSeries=false"
+                LibraryGroupKind.SHELVES -> ""
+            }
+        return decode(
+            request(
+                "${kind.path}/$id/books?page=${page - 1}&size=30$options",
+                expectedScope = owner,
+            )
+        )
+    }
+
+    fun activityOverview(owner: String): ActivityOverview =
+        decode(request("user-statistics/activity-overview", expectedScope = owner))
+
+    fun activityTimeline(year: Int, week: Int, owner: String): ActivityTimeline {
+        require(year in 1970..2100 && week in 1..53)
+        return decode(
+            request("user-statistics/session-timeline?year=$year&week=$week", expectedScope = owner)
+        )
+    }
+
+    fun activitySources(owner: String): ActivitySources =
+        decode(
+            request("user-statistics/reading-source-distribution?days=28", expectedScope = owner)
+        )
+
+    fun books(
+        page: Int,
+        query: String,
+        ebooks: Boolean = false,
+        owner: String? = null,
+        sort: CatalogSort = CatalogSort.TITLE_ASC,
+        readFilter: CatalogReadFilter = CatalogReadFilter.ALL,
+    ): BooksPage {
         require(page > 0)
         return decode(
             request(
@@ -158,12 +239,14 @@ class OrbitApi(val sessions: SessionStore) {
                         put(
                             "sort",
                             buildJsonArray {
-                                add(
-                                    buildJsonObject {
-                                        put("field", "title")
-                                        put("dir", "asc")
-                                    }
-                                )
+                                sort.fields.forEach { (field, direction) ->
+                                    add(
+                                        buildJsonObject {
+                                            put("field", field)
+                                            put("dir", direction)
+                                        }
+                                    )
+                                }
                             },
                         )
                         put(
@@ -183,6 +266,20 @@ class OrbitApi(val sessions: SessionStore) {
                                 put(
                                     "rules",
                                     buildJsonArray {
+                                        if (readFilter != CatalogReadFilter.ALL)
+                                            add(
+                                                buildJsonObject {
+                                                    put("type", "rule")
+                                                    put("field", "readStatus")
+                                                    put("operator", "includesAny")
+                                                    put(
+                                                        "value",
+                                                        buildJsonArray {
+                                                            readFilter.statuses.forEach { add(it) }
+                                                        },
+                                                    )
+                                                }
+                                            )
                                         add(
                                             buildJsonObject {
                                                 put("type", "rule")

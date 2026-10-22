@@ -24,4 +24,29 @@ class DashboardTest {
         assertEquals("v2", merged.first().coverVersion)
         assertEquals(10, mergeDashboardBooks(emptyList(), (1..100).map { BookCard(it) }).size)
     }
+
+    @Test
+    fun `successful listening refresh removes local books absent from the server shelf`() {
+        val local = listOf(BookCard(1, "Completed on web"), BookCard(2, "Still listening"))
+        val remote = listOf(BookCard(2, "Updated title"), BookCard(3, "Started on web"))
+        val merged = mergeDashboardBooks(local, remote, serverAuthoritative = true)
+        assertEquals(listOf(2, 3), merged.map { it.id })
+        assertEquals("Updated title", merged.first().title)
+    }
+
+    @Test
+    fun `an empty listening shelf is not mistaken for an offline request`() {
+        assertTrue(
+            mergeDashboardBooks(listOf(BookCard(1)), emptyList(), serverAuthoritative = true)
+                .isEmpty()
+        )
+    }
+
+    @Test
+    fun `failed listening refresh retains local offline history`() {
+        assertEquals(
+            listOf(1),
+            mergeDashboardBooks(listOf(BookCard(1)), null, serverAuthoritative = true).map { it.id },
+        )
+    }
 }

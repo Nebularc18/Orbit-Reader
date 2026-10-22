@@ -1,6 +1,7 @@
 package app.bookorbit.community.ui
 
 import android.os.Bundle
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -8,17 +9,22 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.FormatListBulleted
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -43,7 +49,13 @@ private data class BookmarkDraft(
 )
 
 @Composable
-fun PlayerSheet(book: AudioManifest, controller: MediaController, app: OrbitApplication) {
+fun PlayerSheet(
+    book: AudioManifest,
+    controller: MediaController,
+    app: OrbitApplication,
+    onClose: () -> Unit = {},
+) {
+    SystemBarAppearance(MaterialTheme.colorScheme.surface.luminance() > .5f)
     var position by remember { mutableLongStateOf(0) }
     var playing by remember { mutableStateOf(controller.isPlaying) }
     var speed by remember { mutableFloatStateOf(controller.playbackParameters.speed) }
@@ -107,114 +119,222 @@ fun PlayerSheet(book: AudioManifest, controller: MediaController, app: OrbitAppl
         assetIndex = target.assetIndex
         position = target.positionMs
     }
-    Column(
-        Modifier.fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 28.dp)
-            .padding(bottom = 28.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        BookCover(app, session, book.book.id, book.revision, Modifier.size(176.dp, 184.dp))
-        Text(
-            book.book.title,
-            style = MaterialTheme.typography.headlineSmall,
-            fontFamily = FontFamily.Serif,
-        )
-        Text(
-            book.book.authors.joinToString(", "),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            chapter?.title ?: "Part ${assetIndex + 1}",
-            style = MaterialTheme.typography.labelLarge,
-        )
-        PlaybackTimeline(
-            label =
-                if (chapter != null) "Chapter ${chapterIndex + 1} of ${book.chapters.size}"
-                else "Part ${assetIndex + 1} of ${book.assets.size}",
-            elapsedMs = (shownElapsed - chapterStart).coerceIn(0, chapterDuration),
-            durationMs = chapterDuration,
-            onScrub = { chapterScrub = it },
-            onSeek = {
-                chapterScrub?.let {
-                    if (timeline.hasDurations) seekBook(chapterStart + it.toLong())
-                    else controller.seekTo(it.toLong())
-                }
-                chapterScrub = null
-            },
-            enabled = timeline.hasDurations || chapter == null,
-        )
-        PlaybackTimeline(
-            label = "Whole book",
-            elapsedMs = shownElapsed.coerceIn(0, timeline.durationMs),
-            durationMs = timeline.durationMs,
-            onScrub = { bookScrub = it },
-            onSeek = {
-                bookScrub?.let { seekBook(it.toLong()) }
-                bookScrub = null
-            },
-            showRemaining = listening.showRemainingTime,
-            onTimeToggle = model::toggleTimeDisplay,
-            enabled = timeline.hasDurations,
-        )
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(28.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                IconButton(onClick = { controller.seekBack() }) {
-                    Icon(Icons.Rounded.Replay, "Back $backSeconds seconds", Modifier.size(32.dp))
-                }
-                Text("${backSeconds}s", style = MaterialTheme.typography.labelSmall)
-            }
-            FilledIconButton(
-                onClick = {
-                    if (controller.playbackState == Player.STATE_ENDED) {
-                        controller.seekTo(0, 0)
-                        controller.play()
-                    } else if (controller.playWhenReady) controller.pause() else controller.play()
-                },
-                modifier = Modifier.size(72.dp),
-            ) {
-                Icon(
-                    if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                    if (playing) "Pause" else "Play",
-                    Modifier.size(36.dp),
+    var coverColor by remember(book.book.id) { mutableStateOf<Color?>(null) }
+    var more by remember { mutableStateOf(false) }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val glow = coverColor ?: MaterialTheme.colorScheme.primary
+        val coverSize = (maxHeight * .28f).coerceIn(168.dp, 260.dp)
+        Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.surface))
+        androidx.compose.foundation.Canvas(Modifier.matchParentSize()) {
+            drawRect(
+                Brush.radialGradient(
+                    listOf(glow.copy(alpha = .55f), glow.copy(alpha = .12f), Color.Transparent),
+                    center = Offset(size.width * .5f, size.height * .27f),
+                    radius = size.width * .95f,
                 )
+            )
+        }
+        Column(
+            Modifier.fillMaxWidth()
+                .statusBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp)
+                .padding(top = 12.dp, bottom = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                CircleAction(Icons.Rounded.KeyboardArrowDown, "Close player", onClose)
+                Text(
+                    "${duration(remainingAudioTime(timeline.durationMs, shownElapsed))} left",
+                    Modifier.weight(1f),
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Box {
+                    CircleAction(Icons.Rounded.MoreHoriz, "More playback options", { more = true })
+                    DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Skip intervals") },
+                            onClick = {
+                                more = false
+                                showSkips = true
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Bookmarks") },
+                            onClick = {
+                                more = false
+                                showBookmarks = true
+                            },
+                        )
+                    }
+                }
             }
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                IconButton(onClick = { controller.seekForward() }) {
-                    Icon(
-                        Icons.Rounded.FastForward,
-                        "Forward $forwardSeconds seconds",
-                        Modifier.size(32.dp),
+            Spacer(Modifier.height(8.dp))
+            BookCover(
+                app,
+                session,
+                book.book.id,
+                book.revision,
+                Modifier.size(coverSize),
+                onColor = { coverColor = it },
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                book.book.title,
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.titleLarge,
+                maxLines = 2,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+            Text(
+                if (book.book.narrators.isNotEmpty())
+                    "Narrated by ${book.book.narrators.joinToString(", ")}"
+                else book.book.authors.joinToString(", "),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+            Text(
+                chapter?.title ?: "Part ${assetIndex + 1}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            PlaybackTimeline(
+                label =
+                    if (chapter != null) "Chapter ${chapterIndex + 1} of ${book.chapters.size}"
+                    else "Part ${assetIndex + 1} of ${book.assets.size}",
+                elapsedMs = (shownElapsed - chapterStart).coerceIn(0, chapterDuration),
+                durationMs = chapterDuration,
+                onScrub = { chapterScrub = it },
+                onSeek = {
+                    chapterScrub?.let {
+                        if (timeline.hasDurations) seekBook(chapterStart + it.toLong())
+                        else controller.seekTo(it.toLong())
+                    }
+                    chapterScrub = null
+                },
+                enabled = timeline.hasDurations || chapter == null,
+            )
+            PlaybackTimeline(
+                label = "Whole book",
+                elapsedMs = shownElapsed.coerceIn(0, timeline.durationMs),
+                durationMs = timeline.durationMs,
+                onScrub = { bookScrub = it },
+                onSeek = {
+                    bookScrub?.let { seekBook(it.toLong()) }
+                    bookScrub = null
+                },
+                showRemaining = listening.showRemainingTime,
+                onTimeToggle = model::toggleTimeDisplay,
+                enabled = timeline.hasDurations,
+            )
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(
+                    onClick = {
+                        val previous =
+                            if (elapsed - chapterStart > 3000) chapterStart
+                            else book.chapters.getOrNull(chapterIndex - 1)?.startMs ?: 0L
+                        seekBook(previous)
+                    },
+                    enabled = timeline.hasDurations,
+                ) {
+                    Icon(Icons.Rounded.SkipPrevious, "Previous chapter", Modifier.size(24.dp))
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircleAction(
+                        Icons.Rounded.Replay,
+                        "Back $backSeconds seconds",
+                        { controller.seekBack() },
+                    )
+                    Text(
+                        "${backSeconds}s",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 10.sp,
                     )
                 }
-                Text("${forwardSeconds}s", style = MaterialTheme.typography.labelSmall)
+                FilledIconButton(
+                    onClick = {
+                        if (controller.playbackState == Player.STATE_ENDED) {
+                            controller.seekTo(0, 0)
+                            controller.play()
+                        } else if (controller.playWhenReady) controller.pause()
+                        else controller.play()
+                    },
+                    modifier = Modifier.size(68.dp),
+                ) {
+                    Icon(
+                        if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                        if (playing) "Pause" else "Play",
+                        Modifier.size(30.dp),
+                    )
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircleAction(
+                        Icons.Rounded.FastForward,
+                        "Forward $forwardSeconds seconds",
+                        { controller.seekForward() },
+                    )
+                    Text(
+                        "${forwardSeconds}s",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 10.sp,
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        book.chapters.getOrNull(chapterIndex + 1)?.let { seekBook(it.startMs) }
+                    },
+                    enabled =
+                        timeline.hasDurations &&
+                            chapterIndex >= 0 &&
+                            chapterIndex + 1 < book.chapters.size,
+                ) {
+                    Icon(Icons.Rounded.SkipNext, "Next chapter", Modifier.size(24.dp))
+                }
             }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            TextButton(onClick = { showSpeed = true }) { Text("${speed}×") }
-            TextButton(onClick = { showChapters = true }) { Text("Chapters") }
-            TextButton(onClick = { showTimer = true }) {
-                Text(
-                    if (sleepAtChapterEnd) "Sleep: chapter end"
-                    else if (sleep > 0) "Sleep: $sleep min" else "Sleep timer"
+            Row(
+                Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(
+                    onClick = { showSpeed = true },
+                    contentPadding = PaddingValues(horizontal = 14.dp),
+                    modifier = Modifier.height(44.dp),
+                ) {
+                    Text("${speed}×", style = MaterialTheme.typography.labelMedium)
+                }
+                PlayerTool(
+                    Icons.AutoMirrored.Rounded.FormatListBulleted,
+                    "Chapters",
+                    { showChapters = true },
+                )
+                PlayerTool(Icons.Rounded.BookmarkBorder, "Bookmarks", { showBookmarks = true })
+                PlayerTool(
+                    Icons.Rounded.Bedtime,
+                    if (sleepAtChapterEnd) "Chapter end"
+                    else if (sleep > 0) "$sleep min" else "Sleep timer",
+                    { showTimer = true },
+                    active = sleepAtChapterEnd || sleep > 0,
                 )
             }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            TextButton(onClick = { showBookmarks = true }) { Text("Bookmarks") }
-            TextButton(onClick = { showSkips = true }) { Text("Skip intervals") }
-        }
-        listening.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        syncWork.firstOrNull()?.outputData?.getString("error")?.let {
-            Text(
-                it,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall,
-            )
+            listening.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            syncWork.firstOrNull()?.outputData?.getString("error")?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
     }
     if (showSpeed)
@@ -383,4 +503,33 @@ fun PlayerSheet(book: AudioManifest, controller: MediaController, app: OrbitAppl
             },
             confirmButton = { TextButton(onClick = { showChapters = false }) { Text("Close") } },
         )
+}
+
+@Composable
+private fun PlayerTool(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    active: Boolean = false,
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        IconButton(onClick = onClick) {
+            Icon(
+                icon,
+                label,
+                Modifier.size(22.dp),
+                tint =
+                    if (active) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            fontSize = 10.sp,
+            color =
+                if (active) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }

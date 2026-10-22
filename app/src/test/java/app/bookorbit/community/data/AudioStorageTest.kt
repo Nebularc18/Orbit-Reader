@@ -32,6 +32,20 @@ class AudioStorageTest {
     }
 
     @Test
+    fun `download sorting happens across all books before slicing a page`() {
+        for (id in 1..35) storage.markDownload(
+            manifest.copy(book = manifest.book.copy(id = id, title = "Book %02d".format(36 - id)))
+        )
+        val first = storage.downloads(1, CatalogSort.TITLE_ASC)
+        val second = storage.downloads(2, CatalogSort.TITLE_ASC)
+        assertEquals((35 downTo 1).toList(), (first + second).map { it.manifest.book.id })
+        assertEquals(
+            (1..30).toList(),
+            storage.downloads(1, CatalogSort.TITLE_DESC).map { it.manifest.book.id },
+        )
+    }
+
+    @Test
     fun `offline library survives storage recreation and excludes incomplete assets`() {
         storage.saveManifest(manifest)
         storage.asset(1, asset).writeBytes(ByteArray(3))

@@ -30,7 +30,12 @@ data class DashboardRow(
     val error: Boolean,
 )
 
-data class DashboardState(val loading: Boolean = true, val rows: List<DashboardRow> = emptyList())
+data class DashboardState(
+    val loading: Boolean = true,
+    val rows: List<DashboardRow> = emptyList(),
+    val goal: ReadingGoal? = null,
+    val streak: ReadingStreak? = null,
+)
 
 class DashboardViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as OrbitApplication
@@ -44,6 +49,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         job =
             viewModelScope.launch {
                 mutable.value = mutable.value.copy(loading = true)
+                val goal = async(Dispatchers.IO) { optionalWidget { app.api.readingGoal(owner) } }
+                val streak =
+                    async(Dispatchers.IO) { optionalWidget { app.api.readingStreak(owner) } }
                 val rows =
                     withContext(Dispatchers.IO) {
                         if (app.sessions.read()?.scope != owner) return@withContext emptyList()
@@ -83,10 +91,12 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                                         section,
                                         mergeDashboardBooks(
                                             local,
-                                            remote?.books.orEmpty().filter {
+                                            remote?.books?.filter {
                                                 section != DashboardSection.READING ||
                                                     it.files.any { file -> file.supported }
                                             },
+                                            serverAuthoritative =
+                                                section == DashboardSection.LISTENING,
                                         ),
                                         remote == null,
                                     )
@@ -94,12 +104,30 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                             }
                             .awaitAll()
                     }
-                if (app.sessions.read()?.scope == owner) mutable.value = DashboardState(false, rows)
+                val goalValue = goal.await()
+                val streakValue = streak.await()
+                if (app.sessions.read()?.scope == owner)
+                    mutable.value = DashboardState(false, rows, goalValue, streakValue)
             }
     }
 }
 
-fun mergeDashboardBooks(local: List<BookCard>, remote: List<BookCard>): List<BookCard> {
-    val details = remote.associateBy { it.id }
-    return (local.map { details[it.id] ?: it } + remote).distinctBy { it.id }.take(10)
+fun mergeDashboardBooks(
+    local: List<BookCard>,
+    remote: List<BookCard>?,
+    serverAuthoritative: Boolean = false,
+): List<BookCard> {
+    // An empty successful shelf can mean the last book was completed on another device.
+    if (serverAuthoritative && remote != null) return remote.distinctBy { it.id }.take(10)
+    val details = remote.orEmpty().associateBy { it.id }
+    return (local.map { details[it.id] ?: it } + remote.orEmpty()).distinctBy { it.id }.take(10)
 }
+
+private fun <T> optionalWidget(load: () -> T): T? =
+    try {
+        load()
+    } catch (error: CancellationException) {
+        throw error
+    } catch (_: Exception) {
+        null
+    }

@@ -1,5 +1,6 @@
 package app.bookorbit.community.reader
 
+import app.bookorbit.community.data.CatalogSort
 import app.bookorbit.community.data.EbookFile
 import java.io.File
 import java.util.zip.ZipEntry
@@ -21,6 +22,29 @@ class EbookStorageTest {
     private lateinit var storage: EbookStorage
     private val file = EbookFile(101, "epub", "Book.epub", fileHash = "version-one")
     private val book = SavedEbook(2, "Sample", listOf("Writer"), file)
+
+    @Test
+    fun `sorted offline pages include every distinct book in global order`() {
+        for (id in 1..35) for (edition in 0..1) {
+            val entry =
+                SavedEbook(
+                    id,
+                    "Book %02d".format(36 - id),
+                    listOf("Writer"),
+                    file.copy(id = id * 10 + edition),
+                )
+            storage.saveBook(entry)
+            storage.content(entry.file).writeBytes(byteArrayOf(1))
+        }
+        val pages =
+            storage.shelfBooks(1, CatalogSort.TITLE_ASC) +
+                storage.shelfBooks(2, CatalogSort.TITLE_ASC)
+        assertEquals((35 downTo 1).toList(), pages.map { it.bookId })
+        assertEquals(
+            (1..30).toList(),
+            storage.shelfBooks(1, CatalogSort.TITLE_DESC).map { it.bookId },
+        )
+    }
 
     @Test
     fun `offline shelf pages distinct books and preserves all editions for opening`() {

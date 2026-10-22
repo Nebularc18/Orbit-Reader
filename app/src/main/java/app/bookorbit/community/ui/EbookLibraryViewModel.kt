@@ -18,6 +18,8 @@ import kotlinx.coroutines.sync.withLock
 data class EbookShelfState(
     val query: String = "",
     val offline: Boolean = false,
+    val sort: CatalogSort = CatalogSort.TITLE_ASC,
+    val readFilter: CatalogReadFilter = CatalogReadFilter.ALL,
     val busy: Boolean = false,
     val error: String? = null,
     val selected: EbookDetail? = null,
@@ -31,16 +33,25 @@ data class EbookShelfState(
 class EbookLibraryViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as OrbitApplication
     val owner = app.sessions.read()?.scope ?: ""
-    private val mutable = MutableStateFlow(EbookShelfState())
+    private val mutable =
+        MutableStateFlow(
+            EbookShelfState(
+                sort = CatalogSortStorage(app, owner).read("ebooks", false),
+                readFilter = CatalogReadFilterStorage(app, owner).read("ebooks"),
+            )
+        )
     val state = mutable.asStateFlow()
     private val refresh = MutableStateFlow(0)
     private var selection: Job? = null
 
     @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
     val catalog =
-        combine(mutable.map { it.query to it.offline }.distinctUntilChanged(), refresh) {
-                key,
-                generation ->
+        combine(
+                mutable
+                    .map { EbookCatalogKey(it.query, it.offline, it.sort, it.readFilter) }
+                    .distinctUntilChanged(),
+                refresh,
+            ) { key, generation ->
                 key to generation
             }
             .debounce(300)
@@ -49,10 +60,17 @@ class EbookLibraryViewModel(application: Application) : AndroidViewModel(applica
                         withContext(Dispatchers.IO) {
                             checkAccount()
                             val result =
-                                if (!key.second)
-                                    app.api.books(page, key.first, ebooks = true, owner = owner)
+                                if (!key.offline)
+                                    app.api.books(
+                                        page,
+                                        key.query,
+                                        ebooks = true,
+                                        owner = owner,
+                                        sort = key.sort,
+                                        readFilter = key.readFilter,
+                                    )
                                 else {
-                                    val saved = EbookStorage(app, owner).shelfBooks(page)
+                                    val saved = EbookStorage(app, owner).shelfBooks(page, key.sort)
                                     BooksPage(
                                         saved.map { BookCard(it.bookId, it.title, it.authors) },
                                         -1,
@@ -72,12 +90,30 @@ class EbookLibraryViewModel(application: Application) : AndroidViewModel(applica
         check(app.sessions.read()?.scope == owner)
     }
 
+    fun readFilter(value: CatalogReadFilter) {
+        CatalogReadFilterStorage(app, owner).save("ebooks", value)
+        mutable.update { it.copy(readFilter = value, error = null) }
+    }
+
+    fun sort(value: CatalogSort) {
+        if (mutable.value.offline && !value.local) return
+        CatalogSortStorage(app, owner).save("ebooks", mutable.value.offline, value)
+        mutable.update { it.copy(sort = value, error = null) }
+    }
+
     fun search(query: String) {
         mutable.update { it.copy(query = query, error = null) }
     }
 
     fun offline(value: Boolean) {
-        mutable.update { it.copy(offline = value, query = "", error = null) }
+        mutable.update {
+            it.copy(
+                offline = value,
+                query = "",
+                error = null,
+                sort = CatalogSortStorage(app, owner).read("ebooks", value),
+            )
+        }
     }
 
     fun browse() {
@@ -248,3 +284,10 @@ fun preferredReadingFile(files: List<EbookFile>, preferredId: Int?): EbookFile? 
             listOf("epub", "kepub", "pdf", "cbz", "cbr", "cb7").indexOf(it.format?.lowercase())
         }
 }
+
+private data class EbookCatalogKey(
+    val query: String,
+    val offline: Boolean,
+    val sort: CatalogSort,
+    val readFilter: CatalogReadFilter,
+)

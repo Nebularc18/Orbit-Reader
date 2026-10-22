@@ -22,6 +22,8 @@ data class LibraryState(
     val error: String? = null,
     val query: String = "",
     val offline: Boolean = false,
+    val sort: CatalogSort = CatalogSort.TITLE_ASC,
+    val readFilter: CatalogReadFilter = CatalogReadFilter.ALL,
     val selected: AudioManifest? = null,
     val details: EbookDetail? = null,
     val detailsBusy: Boolean = false,
@@ -35,7 +37,19 @@ data class LibraryState(
 
 class LibraryViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as OrbitApplication
-    private val mutable = MutableStateFlow(LibraryState(session = app.sessions.read()))
+
+    private fun initialState(session: Session?) =
+        LibraryState(
+            session = session,
+            readFilter =
+                session?.let { CatalogReadFilterStorage(app, it.scope).read("audio") }
+                    ?: CatalogReadFilter.ALL,
+            sort =
+                session?.let { CatalogSortStorage(app, it.scope).read("audio", false) }
+                    ?: CatalogSort.TITLE_ASC,
+        )
+
+    private val mutable = MutableStateFlow(initialState(app.sessions.read()))
     val state = mutable.asStateFlow()
     private val refresh = MutableStateFlow(0)
     private var detailJob: Job? = null
@@ -43,7 +57,9 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     val catalog =
         combine(
                 mutable
-                    .map { Triple(it.session?.scope, it.query, it.offline) }
+                    .map {
+                        CatalogKey(it.session?.scope, it.query, it.offline, it.sort, it.readFilter)
+                    }
                     .distinctUntilChanged(),
                 refresh,
             ) { key, generation ->
@@ -51,16 +67,24 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             }
             .debounce(300)
             .flatMapLatest { (key, _) ->
-                val owner = key.first
+                val owner = key.owner
                 if (owner == null) flowOf(PagingData.empty())
                 else
                     bookPager { page ->
                             withContext(Dispatchers.IO) {
                                 if (app.sessions.read()?.scope != owner) throw ApiFailure(401)
                                 val result =
-                                    if (!key.third) app.api.books(page, key.second, owner = owner)
+                                    if (!key.offline)
+                                        app.api.books(
+                                            page,
+                                            key.query,
+                                            owner = owner,
+                                            sort = key.sort,
+                                            readFilter = key.readFilter,
+                                        )
                                     else {
-                                        val downloads = AudioStorage(app, owner).downloads(page)
+                                        val downloads =
+                                            AudioStorage(app, owner).downloads(page, key.sort)
                                         BooksPage(
                                             downloads.map {
                                                 BookCard(
@@ -91,7 +115,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             try {
                 val session =
                     withContext(Dispatchers.IO) { app.api.login(server, username, password) }
-                mutable.value = LibraryState(session = session)
+                mutable.value = initialState(session)
                 browse()
             } catch (error: CancellationException) {
                 throw error
@@ -117,12 +141,36 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun readFilter(value: CatalogReadFilter) {
+        val owner = mutable.value.session?.scope ?: return
+        CatalogReadFilterStorage(app, owner).save("audio", value)
+        mutable.update { it.copy(readFilter = value, error = null) }
+    }
+
+    fun sort(value: CatalogSort) {
+        val snapshot = mutable.value
+        if (snapshot.offline && !value.local) return
+        val owner = snapshot.session?.scope ?: return
+        CatalogSortStorage(app, owner).save("audio", snapshot.offline, value)
+        mutable.update { it.copy(sort = value, error = null) }
+    }
+
     fun search(value: String) {
         mutable.update { it.copy(query = value, error = null) }
     }
 
     fun setOffline(value: Boolean) {
-        mutable.update { it.copy(offline = value, query = "", error = null) }
+        mutable.update {
+            it.copy(
+                offline = value,
+                query = "",
+                error = null,
+                sort =
+                    it.session?.let { account ->
+                        CatalogSortStorage(app, account.scope).read("audio", value)
+                    } ?: CatalogSort.TITLE_ASC,
+            )
+        }
         refreshDownloaded()
     }
 
@@ -339,3 +387,11 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                 "Cannot reach your server. Check the address and connection, or open Downloads for offline listening."
         }
 }
+
+private data class CatalogKey(
+    val owner: String?,
+    val query: String,
+    val offline: Boolean,
+    val sort: CatalogSort,
+    val readFilter: CatalogReadFilter,
+)
