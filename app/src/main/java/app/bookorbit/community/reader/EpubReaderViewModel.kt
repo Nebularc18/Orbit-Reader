@@ -44,7 +44,7 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
     private val persistence = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var saveJob: Job? = null
 
-    fun load(account: String, file: Int) {
+    fun load(account: String, file: Int, noteId: String? = null) {
         if (loading != null) return
         owner = account
         fileId = file
@@ -58,6 +58,22 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
                             val book = storage.book(fileId) ?: throw IOException()
                             require(storage.ready(book.file)) {
                                 "Open this book from the Read tab to save an offline copy first."
+                            }
+                            val note =
+                                noteId?.let {
+                                    ReadingNotes(app, owner, fileId).all().firstOrNull { note ->
+                                        note.id == it && note.revision == book.file.revision
+                                    } ?: error("Saved location unavailable")
+                                }
+                            val locator =
+                                (note?.let { ReadingPlace(it.revision, it.locator) }
+                                        ?: storage.place(book.file))
+                                    ?.let {
+                                        runCatching { Locator.fromJSON(JSONObject(it.locator)) }
+                                            .getOrNull()
+                                    }
+                            require(noteId == null || locator != null) {
+                                "Saved location unavailable"
                             }
                             val http = DefaultHttpClient()
                             val retriever = AssetRetriever(app.contentResolver, http)
@@ -123,11 +139,6 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
                                     "Encrypted EPUBs are not supported yet."
                                 )
                             }
-                            val locator =
-                                storage.place(book.file)?.let {
-                                    runCatching { Locator.fromJSON(JSONObject(it.locator)) }
-                                        .getOrNull()
-                                }
                             EpubReaderState(
                                 book,
                                 publication,

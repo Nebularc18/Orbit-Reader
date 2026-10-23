@@ -95,6 +95,14 @@ class EbookStorage(context: Context, scope: String) {
 
     private val root = File(context.filesDir, "ebooks/$scope").apply { mkdirs() }
 
+    fun savedFileIds(): List<Int> =
+        root
+            .listFiles()
+            .orEmpty()
+            .filter { it.isDirectory }
+            .mapNotNull { it.name.toIntOrNull() }
+            .sorted()
+
     private fun dir(fileId: Int) = File(root, fileId.toString()).apply { mkdirs() }
 
     private fun version(file: EbookFile) =

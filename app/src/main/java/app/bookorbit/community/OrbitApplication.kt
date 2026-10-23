@@ -10,6 +10,7 @@ import kotlinx.coroutines.sync.Semaphore
 
 class OrbitApplication : Application() {
     val sessions by lazy { EncryptedSessionStore(this) }
+    val oidcStore by lazy { app.bookorbit.community.data.OidcStore(this) }
     val api by lazy { OrbitApi(sessions) }
     val coverLoader by lazy {
         coil.ImageLoader.Builder(this).okHttpClient(api.authenticatedClient).build()

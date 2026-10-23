@@ -156,8 +156,7 @@ fun LibraryBrowser(
         LazyVerticalGrid(
             columns =
                 if (!grid) GridCells.Fixed(1)
-                else if (state.group == null) GridCells.Adaptive(145.dp)
-                else GridCells.Adaptive(100.dp),
+                else if (state.group == null) GridCells.Adaptive(145.dp) else adaptiveBookColumns(),
             modifier = Modifier.weight(1f),
             state = scroll,
             contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 24.dp),

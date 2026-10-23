@@ -92,6 +92,7 @@ fun PlaybackTimeline(
                                     else "Show time remaining",
                                 onClick = onTimeToggle,
                             )
+                            .heightIn(min = 48.dp)
                             .padding(horizontal = 4.dp)
                     else Modifier,
                 style = MaterialTheme.typography.labelMedium,

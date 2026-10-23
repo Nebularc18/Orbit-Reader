@@ -108,6 +108,7 @@ fun EbookLibrary(
             OutlinedTextField(
                 value = state.query,
                 onValueChange = model::search,
+                label = { Text("Search ebooks") },
                 placeholder = { Text("Search your ebooks") },
                 leadingIcon = { Icon(Icons.Rounded.Search, null) },
                 singleLine = true,
@@ -148,7 +149,7 @@ fun EbookLibrary(
                 else "Try another search or reading status.",
             )
         LazyVerticalGrid(
-            columns = if (grid) GridCells.Adaptive(100.dp) else GridCells.Fixed(1),
+            columns = if (grid) adaptiveBookColumns() else GridCells.Fixed(1),
             modifier = Modifier.weight(1f),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             state = catalogScroll,

@@ -19,6 +19,9 @@ import kotlinx.coroutines.sync.withLock
 
 data class LibraryState(
     val session: Session? = null,
+    val loginOptions: LoginOptions? = null,
+    val optionsAddress: String? = null,
+    val browserUrl: String? = null,
     val connections: List<Session> = emptyList(),
     val addingServer: Boolean = false,
     val busy: Boolean = false,
@@ -125,6 +128,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             mutable.update { it.copy(busy = true, error = null) }
             try {
                 pauseForConnection(controller)
+                app.oidcStore.clear()
                 val session =
                     withContext(Dispatchers.IO) { app.api.login(server, username, password) }
                 mutable.value = initialState(session)
@@ -137,6 +141,99 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun loadLoginOptions(address: String) {
+        if (mutable.value.busy) return
+        viewModelScope.launch {
+            mutable.update {
+                it.copy(busy = true, error = null, loginOptions = null, optionsAddress = null)
+            }
+            try {
+                val options = withContext(Dispatchers.IO) { app.api.loginOptions(address) }
+                mutable.update {
+                    it.copy(busy = false, loginOptions = options, optionsAddress = address.trim())
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                mutable.update {
+                    it.copy(
+                        busy = false,
+                        error =
+                            "Could not load sign-in options. Check the server address or use password sign-in.",
+                    )
+                }
+            }
+        }
+    }
+
+    fun startOidc(
+        address: String,
+        provider: OidcProvider,
+        controller: androidx.media3.session.MediaController?,
+    ) {
+        if (
+            mutable.value.busy ||
+                mutable.value.optionsAddress != address.trim() ||
+                provider !in mutable.value.loginOptions?.oidcProviders.orEmpty()
+        )
+            return
+        viewModelScope.launch {
+            mutable.update { it.copy(busy = true, error = null) }
+            try {
+                pauseForConnection(controller)
+                val url =
+                    withContext(Dispatchers.IO) {
+                        val server = normalizeServer(address)
+                        val previous = app.sessions.read()?.scope
+                        val response = app.api.oidcState(server, provider.slug)
+                        val pending =
+                            PendingOidc(
+                                server,
+                                response.state,
+                                oidcSecret(),
+                                oidcSecret(),
+                                System.currentTimeMillis(),
+                                previous,
+                            )
+                        val url = oidcAuthorization(provider, response, pending)
+                        check(app.sessions.read()?.scope == previous)
+                        app.oidcStore.save(pending)
+                        url
+                    }
+                mutable.update { it.copy(busy = false, browserUrl = url) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                mutable.update {
+                    it.copy(
+                        busy = false,
+                        error =
+                            "Could not start provider sign-in. Check the server's OIDC configuration and try again.",
+                    )
+                }
+            }
+        }
+    }
+
+    fun browserOpened() {
+        mutable.update { it.copy(browserUrl = null) }
+    }
+
+    fun browserFailed() {
+        app.oidcStore.clear()
+        mutable.update {
+            it.copy(
+                browserUrl = null,
+                error = "No browser could open sign-in. Install or enable a browser and try again.",
+            )
+        }
+    }
+
+    fun acceptSavedSession() {
+        mutable.value = initialState(app.sessions.read())
+        browse()
+    }
+
     fun logout(controller: androidx.media3.session.MediaController?) {
         if (mutable.value.busy) return
         detailJob?.cancel()
@@ -145,6 +242,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             mutable.update { it.copy(busy = true, error = null) }
             try {
                 pauseForConnection(controller)
+                app.oidcStore.clear()
                 WorkManager.getInstance(app).cancelAllWorkByTag("account-${session.scope}")
                 try {
                     withContext(Dispatchers.IO) { app.api.logout() }
@@ -161,6 +259,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun addServer(value: Boolean) {
+        if (!value) app.oidcStore.clear()
         if (!mutable.value.busy) mutable.update { it.copy(addingServer = value, error = null) }
     }
 
@@ -171,7 +270,11 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             mutable.update { it.copy(busy = true, error = null) }
             try {
                 pauseForConnection(controller)
-                val session = withContext(Dispatchers.IO) { app.api.switchConnection(scope) }
+                val session =
+                    withContext(Dispatchers.IO) {
+                        app.oidcStore.clear()
+                        app.api.switchConnection(scope)
+                    }
                 mutable.value = initialState(session)
                 browse()
             } catch (error: CancellationException) {

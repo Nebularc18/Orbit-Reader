@@ -255,3 +255,82 @@ data class ReadingStreak(
     val longestStreak: Int,
     val lastSevenDays: List<Boolean> = emptyList(),
 )
+
+@Serializable
+data class LoginOptions(
+    val passwordLoginEnabled: Boolean = true,
+    val oidcProviders: List<OidcProvider> = emptyList(),
+)
+
+@Serializable
+data class OidcProvider(
+    val slug: String,
+    val displayName: String,
+    val enabled: Boolean,
+    val clientId: String,
+    val scopes: String,
+)
+
+@Serializable data class OidcState(val state: String, val authorizationEndpoint: String)
+
+val requestStatuses =
+    listOf(
+        "pending",
+        "approved",
+        "rejected",
+        "cancelled",
+        "searching",
+        "grabbed",
+        "downloading",
+        "importing",
+        "needs_review",
+        "available",
+        "failed",
+    )
+
+@Serializable
+data class BookRequest(
+    val id: Int,
+    val userId: Int,
+    val title: String,
+    val authors: List<String> = emptyList(),
+    val mediaKind: String,
+    val status: String,
+    val note: String? = null,
+    val decisionNote: String? = null,
+    val statusReason: String? = null,
+    val createdAt: String = "",
+) {
+    fun canCancel(account: Account) =
+        userId == account.id &&
+            status in
+                listOf(
+                    "pending",
+                    "approved",
+                    "searching",
+                    "grabbed",
+                    "downloading",
+                    "importing",
+                    "needs_review",
+                    "failed",
+                )
+}
+
+@Serializable data class BookRequestPage(val items: List<BookRequest>, val total: Int)
+
+@Serializable data class BookRequestResult(val request: BookRequest, val subscribed: Boolean)
+
+@Serializable
+data class NewBookRequest(
+    val title: String,
+    val authors: List<String>,
+    val mediaKind: String,
+    val note: String = "",
+) {
+    fun validated(): NewBookRequest {
+        require(title.isNotBlank() && title.length <= 500)
+        require(authors.size <= 50 && authors.all { it.isNotBlank() && it.length <= 255 })
+        require(mediaKind in listOf("ebook", "audiobook") && note.length <= 2000)
+        return copy(title = title.trim(), authors = authors.map(String::trim), note = note.trim())
+    }
+}

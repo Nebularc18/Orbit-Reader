@@ -14,6 +14,11 @@ import zipfile
 import zlib
 import binascii
 import datetime
+import secrets
+import hashlib
+import base64
+import html
+import time
 from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -78,6 +83,10 @@ comic_buffer=io.BytesIO()
 with zipfile.ZipFile(comic_buffer,'w') as archive:
     for page in [2,1,0]: archive.writestr(f'page{[1,2,10][page]}.png',COMIC_IMAGES[page])
 CBZ=comic_buffer.getvalue()
+OIDC_FIXTURE = False
+OIDC_STATES = {}
+OIDC_CODES = {}
+BOOK_REQUESTS = {}
 CATALOG_SIZE = 0
 READING_PROGRESS={}
 
@@ -131,10 +140,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         data = self.body()
+        if self.path == "/api/v1/auth/oidc/fixture/state" and OIDC_FIXTURE:
+            state = secrets.token_urlsafe(32)
+            OIDC_STATES[state] = time.time()
+            endpoint = f"http://{self.server.server_address[0]}:{self.server.server_port}/fixture/authorize"
+            return self.send_json({"state": state, "authorizationEndpoint": endpoint})
+        if self.path == "/api/v1/auth/oidc/callback" and OIDC_FIXTURE:
+            expected = {"code", "codeVerifier", "redirectUri", "nonce", "state", "clientKind", "deviceLabel"}
+            saved = OIDC_CODES.pop(data.get("code", ""), None)
+            if set(data) != expected or not saved or data.get("clientKind") != "native": return self.send_json({}, 400)
+            challenge = base64.urlsafe_b64encode(hashlib.sha256(data['codeVerifier'].encode()).digest()).decode().rstrip('=')
+            if data['state'] != saved['state'] or data['nonce'] != saved['nonce'] or challenge != saved['challenge'] or data['redirectUri'] != 'bookorbit://oauth2-callback' or time.time() - saved['created'] > 600:
+                return self.send_json({}, 401)
+            return self.send_json({"mode": "login", "accessToken": "fixture-access", "refreshToken": "a" * 64, "user": {"id": 1, "name": "Reader", "username": "reader", "isSuperuser": False, "permissions": ["library_download", "library_edit_metadata", "book_request_access"]}})
         if self.path == "/api/v1/auth/login":
             if data.get("username") != "reader" or data.get("password") != "reader" or data.get("clientKind") != "native":
                 return self.send_json({}, 401)
-            return self.send_json({"accessToken": "fixture-access", "refreshToken": "a" * 64, "user": {"id": 1, "name": "Reader", "username": "reader", "isSuperuser": False, "permissions": ["library_download", "library_edit_metadata"]}})
+            return self.send_json({"accessToken": "fixture-access", "refreshToken": "a" * 64, "user": {"id": 1, "name": "Reader", "username": "reader", "isSuperuser": False, "permissions": ["library_download", "library_edit_metadata", "book_request_access"]}})
         if self.path == "/api/v1/auth/refresh":
             return self.send_json({"accessToken": "fixture-access", "refreshToken": "a" * 64})
         if self.path == "/api/v1/auth/logout":
@@ -152,6 +174,24 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({})
         if not self.authorized():
             return
+        if self.path == "/api/v1/book-requests":
+            if set(data) - {'title', 'authors', 'mediaKind', 'note'} or not isinstance(data.get('title'), str) or not data['title'].strip() or len(data['title']) > 500 or data.get('mediaKind') not in ['ebook', 'audiobook'] or len(data.get('note', '')) > 2000:
+                return self.send_json({}, 400)
+            with LOCK:
+                existing = next((row for row in BOOK_REQUESTS.values() if row['title'].casefold() == data['title'].strip().casefold() and row['mediaKind'] == data['mediaKind'] and row['status'] not in ['cancelled', 'rejected', 'available']), None)
+                if existing: return self.send_json({'request': existing, 'subscribed': True})
+                request_id = max(BOOK_REQUESTS.keys(), default=0) + 1
+                row = {'id': request_id, 'userId': 1, 'title': data['title'].strip(), 'authors': data.get('authors', []), 'mediaKind': data['mediaKind'], 'status': 'pending', 'note': data.get('note') or None, 'decisionNote': None, 'statusReason': None, 'createdAt': datetime.datetime.now(datetime.timezone.utc).isoformat()}
+                BOOK_REQUESTS[request_id] = row
+            return self.send_json({'request': row, 'subscribed': False}, 201)
+        request_match = re.fullmatch(r'/api/v1/book-requests/(\d+)/cancel', self.path)
+        if request_match:
+            with LOCK:
+                row = BOOK_REQUESTS.get(int(request_match[1]))
+                if not row: return self.send_json({}, 404)
+                if row['status'] in ['cancelled', 'rejected', 'available']: return self.send_json({}, 400)
+                row['status'] = 'cancelled'
+            return self.send_json(row)
         match = re.fullmatch(r"/api/v1/books/([2-5])/annotations", self.path)
         if match:
             global NEXT_ANNOTATION
@@ -237,10 +277,28 @@ class Handler(BaseHTTPRequestHandler):
         self.annotation_mutation(delete=True)
 
     def do_GET(self):
-        if not self.authorized():
-            return
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        if parsed.path == '/api/v1/auth/login-options':
+            providers = [{'slug': 'fixture', 'displayName': 'Synthetic provider', 'enabled': True, 'clientId': 'orbit-fixture', 'scopes': 'openid profile'}] if OIDC_FIXTURE else []
+            return self.send_json({'passwordLoginEnabled': True, 'allowRegistration': False, 'oidcProviders': providers})
+        if parsed.path == '/fixture/authorize' and OIDC_FIXTURE:
+            params = {key: values[0] for key, values in query.items() if len(values) == 1}
+            state = params.get('state', '')
+            started = OIDC_STATES.pop(state, None)
+            if not started or time.time() - started > 600 or params.get('client_id') != 'orbit-fixture' or params.get('response_type') != 'code' or params.get('code_challenge_method') != 'S256' or params.get('redirect_uri') != 'bookorbit://oauth2-callback':
+                return self.send_json({}, 400)
+            code = secrets.token_urlsafe(32)
+            OIDC_CODES[code] = {'state': state, 'nonce': params.get('nonce'), 'challenge': params.get('code_challenge'), 'created': started}
+            target = html.escape(f"bookorbit://oauth2-callback?code={code}&state={state}", quote=True)
+            return self.send_bytes(f'<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><h1>Synthetic provider</h1><p>Test sign-in only. No real identity provider is connected.</p><a href="{target}">Continue to Orbit Reader</a></body></html>'.encode(), 'text/html')
+        if not self.authorized():
+            return
+        if parsed.path == '/api/v1/book-requests':
+            page = max(1, int(query.get('page', ['1'])[0])); limit = min(100, max(1, int(query.get('limit', ['30'])[0])))
+            with LOCK:
+                rows = [dict(row) for row in sorted(BOOK_REQUESTS.values(), key=lambda row: -row['id']) if (not query.get('status') or row['status'] == query['status'][0]) and (not query.get('mediaKind') or row['mediaKind'] == query['mediaKind'][0])]
+            return self.send_json({'items': rows[(page-1)*limit:page*limit], 'total': len(rows)})
         match = re.fullmatch(r"/api/v1/(series|authors|collections|smart-scopes)", parsed.path)
         if match:
             kind = match[1]
@@ -415,7 +473,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(state)
 
     def log_message(self, format_string, *args):
-        print(f"fixture {self.command} {self.path} {args[1] if len(args) > 1 else ''}", flush=True)
+        print(f"fixture {self.command} {urlparse(self.path).path} {args[1] if len(args) > 1 else ''}", flush=True)
 
 
 if __name__ == "__main__":
@@ -423,9 +481,15 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1", help="Bind address. Use a trusted LAN interface only for emulator access.")
     parser.add_argument("--port", type=int, default=4890)
     parser.add_argument("--catalog-size", type=int, default=0, help="Additional synthetic books per format for scrolling tests")
+    parser.add_argument("--oidc", action="store_true", help="Enable a synthetic browser-based OIDC flow for client tests")
+    parser.add_argument("--requests-count", type=int, default=0, help="Seed synthetic personal requests for paging tests")
     parser.add_argument("--book-dir", type=pathlib.Path, help="Private fixture directory with manifest.json, cover.jpg, and <fileId>.<format> audio files")
     args = parser.parse_args()
     if not 0 <= args.catalog_size <= 10000: parser.error("catalog-size must be between 0 and 10000")
+    if not 0 <= args.requests_count <= 10000: parser.error("requests-count must be between 0 and 10000")
+    OIDC_FIXTURE = args.oidc
+    for i in range(args.requests_count):
+        BOOK_REQUESTS[i+1] = {'id': i+1, 'userId': 1, 'title': f'Synthetic request {i+1:03}', 'authors': ['Orbit Test Reader'], 'mediaKind': 'ebook' if i % 2 else 'audiobook', 'status': 'pending' if i % 3 else 'available', 'note': None, 'decisionNote': None, 'statusReason': None}
     CATALOG_SIZE = args.catalog_size
     if args.book_dir:
         BOOK_DIR = args.book_dir.resolve()

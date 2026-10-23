@@ -36,7 +36,7 @@ class PageReaderViewModel(application: Application) : AndroidViewModel(applicati
     private val mutable = MutableStateFlow(PageReaderState())
     val state = mutable.asStateFlow()
 
-    fun load(scope: String, fileId: Int) {
+    fun load(scope: String, fileId: Int, noteId: String? = null) {
         if (job != null) return
         owner = scope
         job =
@@ -48,20 +48,30 @@ class PageReaderViewModel(application: Application) : AndroidViewModel(applicati
                                 check(app.sessions.read()?.scope == owner)
                                 val storage = EbookStorage(app, owner)
                                 val book = storage.book(fileId) ?: error("No saved book")
+                                val note =
+                                    noteId?.let {
+                                        ReadingNotes(app, owner, fileId).all().firstOrNull { note ->
+                                            note.id == it && note.revision == book.file.revision
+                                        } ?: error("Saved location unavailable")
+                                    }
                                 document =
                                     PagedDocument(
                                         storage.content(book.file),
                                         book.file.format?.lowercase() == "pdf",
                                     )
                                 val page =
-                                    storage.place(book.file)?.let {
-                                        runCatching {
-                                                wireJson
-                                                    .decodeFromString<PageLocation>(it.locator)
-                                                    .page
-                                            }
-                                            .getOrNull()
-                                    } ?: 0
+                                    (note?.let { ReadingPlace(it.revision, it.locator) }
+                                            ?: storage.place(book.file))
+                                        ?.let {
+                                            runCatching {
+                                                    wireJson
+                                                        .decodeFromString<PageLocation>(it.locator)
+                                                        .page
+                                                }
+                                                .getOrNull()
+                                        }
+                                        ?: if (note != null) error("Saved location unavailable")
+                                        else 0
                                 book to page.coerceIn(0, document!!.pageCount - 1)
                             }
                         }
