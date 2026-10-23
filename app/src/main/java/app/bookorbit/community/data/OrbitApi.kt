@@ -127,6 +127,84 @@ class OrbitApi(val sessions: SessionStore) {
                 .also(sessions::save)
         }
 
+    fun loginOptions(address: String): LoginOptions =
+        decode(raw(normalizeServer(address), "auth/login-options", "GET", null))
+
+    fun oidcState(address: String, slug: String): OidcState {
+        require(slug.matches(Regex("[a-zA-Z0-9_.-]{1,100}")))
+        return decode(raw(normalizeServer(address), "auth/oidc/$slug/state", "POST", "{}"))
+    }
+
+    fun completeOidc(pending: PendingOidc, code: String): Session =
+        synchronized(refreshLock) {
+            check(sessions.read()?.scope == pending.previousScope) {
+                "The active account changed during sign-in. Try again."
+            }
+            require(code.isNotBlank() && code.length <= 2048)
+            val credentials: Credentials =
+                decode(
+                    raw(
+                        pending.server,
+                        "auth/oidc/callback",
+                        "POST",
+                        buildJsonObject {
+                                put("code", code)
+                                put("codeVerifier", pending.verifier)
+                                put("redirectUri", OIDC_REDIRECT)
+                                put("nonce", pending.nonce)
+                                put("state", pending.state)
+                                put("clientKind", "native")
+                                put("deviceLabel", "Orbit Reader Android")
+                            }
+                            .toString(),
+                    )
+                )
+            check(sessions.read()?.scope == pending.previousScope)
+            Session(
+                    pending.server,
+                    credentials.accessToken,
+                    credentials.refreshToken,
+                    credentials.user,
+                )
+                .also(sessions::save)
+        }
+
+    fun bookRequests(page: Int, status: String?, media: String?, owner: String): BookRequestPage {
+        require(
+            page >= 1 &&
+                (status == null || status in requestStatuses) &&
+                (media == null || media in listOf("ebook", "audiobook"))
+        )
+        val query = buildString {
+            append("book-requests?page=$page&limit=30")
+            if (status != null) append("&status=$status")
+            if (media != null) append("&mediaKind=$media")
+        }
+        return decode(request(query, expectedScope = owner))
+    }
+
+    private val submissionClient by lazy {
+        authenticatedClient.newBuilder().retryOnConnectionFailure(false).build()
+    }
+
+    fun submitBookRequest(value: NewBookRequest, owner: String): BookRequestResult {
+        val valid = value.validated()
+        return decode(
+            request(
+                "book-requests",
+                "POST",
+                wireJson.encodeToString(valid),
+                owner,
+                client = submissionClient,
+            )
+        )
+    }
+
+    fun cancelBookRequest(id: Int, owner: String): BookRequest {
+        require(id > 0)
+        return decode(request("book-requests/$id/cancel", "POST", "{}", owner))
+    }
+
     fun switchConnection(scope: String): Session =
         synchronized(refreshLock) {
             check(sessions.activate(scope)) { "This saved connection is no longer available." }
@@ -494,9 +572,10 @@ class OrbitApi(val sessions: SessionStore) {
         body: String? = null,
         expectedScope: String? = null,
         headers: Map<String, String> = emptyMap(),
+        client: OkHttpClient = authenticatedClient,
     ): Response =
         checked(
-            authenticatedClient
+            client
                 .newCall(
                     buildRequest(url(path), method, body)
                         .newBuilder()
@@ -507,7 +586,7 @@ class OrbitApi(val sessions: SessionStore) {
                 .execute()
         )
 
-    private fun raw(server: String, path: String, method: String, body: String): Response =
+    private fun raw(server: String, path: String, method: String, body: String?): Response =
         checked(transport.newCall(buildRequest("$server/api/v1/$path", method, body)).execute())
 
     private fun buildRequest(url: String, method: String, body: String?) =

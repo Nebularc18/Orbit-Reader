@@ -44,7 +44,17 @@ fun CatalogEntry(
                 account,
                 book.id,
                 book.coverVersion,
-                Modifier.fillMaxWidth().height(150.dp),
+                Modifier.fillMaxWidth()
+                    .height(
+                        if (
+                            useNavigationRail(
+                                androidx.compose.ui.platform.LocalConfiguration.current
+                                    .screenWidthDp
+                            )
+                        )
+                            220.dp
+                        else 150.dp
+                    ),
                 ebook,
             )
             Text(
@@ -169,6 +179,7 @@ fun AudioCatalog(
                 state.query,
                 onSearch,
                 modifier = Modifier.fillMaxWidth(),
+                label = { Text("Search audiobooks") },
                 placeholder = {
                     Text("Search titles or authors", style = MaterialTheme.typography.bodyMedium)
                 },
@@ -227,8 +238,7 @@ fun AudioCatalog(
             }
         }
         LazyVerticalGrid(
-            columns =
-                if (grid && !state.offline) GridCells.Adaptive(100.dp) else GridCells.Fixed(1),
+            columns = if (grid && !state.offline) adaptiveBookColumns() else GridCells.Fixed(1),
             modifier = Modifier.weight(1f),
             state = scroll,
             contentPadding = PaddingValues(bottom = 20.dp),

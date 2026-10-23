@@ -119,7 +119,7 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
 
     private var navigator by mutableStateOf<EpubNavigatorFragment?>(null)
 
-    @OptIn(ExperimentalMaterial3Api::class)
+    @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         supportFragmentManager.fragmentFactory = EpubNavigatorFragment.createDummyFactory()
         super.onCreate(savedInstanceState)
@@ -128,7 +128,11 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
             .apply { supportFragmentManager.fragments.forEach { remove(it) } }
             .commitNow()
         enableEdgeToEdge()
-        model.load(intent.getStringExtra("scope") ?: "", intent.getIntExtra("fileId", 0))
+        model.load(
+            intent.getStringExtra("scope") ?: "",
+            intent.getIntExtra("fileId", 0),
+            intent.getStringExtra("noteId"),
+        )
         notesModel.load(intent.getStringExtra("scope") ?: "", intent.getIntExtra("fileId", 0))
         readAloud =
             ReadAloudController(this, intent.getStringExtra("scope").orEmpty()) {
@@ -179,8 +183,10 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
                     else -> lightColorScheme()
                 }
             ReaderSystemBars(window, controlsVisible, prefs.theme != "dark")
-            LaunchedEffect(controlsVisible) {
-                if (controlsVisible) {
+            val touchExploration = rememberTouchExploration()
+            LaunchedEffect(controlsVisible, touchExploration) {
+                if (touchExploration) controlsVisible = true
+                else if (controlsVisible) {
                     delay(6000)
                     controlsVisible = false
                 }
@@ -256,9 +262,9 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
                                         }
                                     },
                                 )
-                                Row(
+                                FlowRow(
                                     Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceEvenly,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 ) {
                                     TextButton(
                                         onClick = { mark(false) },

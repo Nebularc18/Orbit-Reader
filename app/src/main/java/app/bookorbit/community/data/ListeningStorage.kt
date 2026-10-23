@@ -49,6 +49,20 @@ class ListeningStorage(context: Context, scope: String) {
 
     private val root = File(context.filesDir, "listening/$scope").apply { mkdirs() }
 
+    fun savedBookIds(): List<Int> =
+        root
+            .listFiles()
+            .orEmpty()
+            .mapNotNull {
+                it.name
+                    .removeSuffix(".bak")
+                    .takeIf { name -> name.endsWith(".json") }
+                    ?.removeSuffix(".json")
+                    ?.toIntOrNull()
+            }
+            .distinct()
+            .sorted()
+
     private fun book(bookId: Int): BookListening =
         read(File(root, "$bookId.json"))?.let { wireJson.decodeFromString(it) } ?: BookListening()
 

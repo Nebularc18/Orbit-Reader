@@ -236,7 +236,7 @@ fun CircleAction(
 ) {
     Surface(
         onClick = onClick,
-        modifier = modifier.size(44.dp),
+        modifier = modifier.size(48.dp),
         shape = CircleShape,
         color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = .8f),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .6f)),

@@ -66,8 +66,12 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
     var pendingEbook by remember { mutableStateOf<Int?>(null) }
     var showLibrary by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
     var showActivity by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
-    BackHandler(showLibrary || showActivity) {
-        if (showActivity) showActivity = false
+    var showNotebook by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
+    var showRequests by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
+    BackHandler(showLibrary || showActivity || showNotebook || showRequests) {
+        if (showRequests) showRequests = false
+        else if (showNotebook) showNotebook = false
+        else if (showActivity) showActivity = false
         else {
             showLibrary = false
             showDashboard = true
@@ -89,6 +93,36 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
         showEbooks = false
         pendingEbook = null
     }
+    val selectedTab =
+        if (showLibrary) 4
+        else if (showDashboard) 0 else if (showEbooks) 2 else if (state.offline) 3 else 1
+    val selectTab: (Int) -> Unit = { tab ->
+        showLibrary = tab == 4
+        showActivity = false
+        showNotebook = false
+        showRequests = false
+        showDashboard = tab == 0
+        showEbooks = tab == 2
+        if (tab == 1 || tab == 3) model.setOffline(tab == 3)
+    }
+    val rail =
+        useNavigationRail(androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp)
+    val context = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(state.browserUrl) {
+        state.browserUrl?.let { url ->
+            try {
+                context.startActivity(
+                    android.content.Intent(
+                        android.content.Intent.ACTION_VIEW,
+                        android.net.Uri.parse(url),
+                    )
+                )
+                model.browserOpened()
+            } catch (_: android.content.ActivityNotFoundException) {
+                model.browserFailed()
+            }
+        }
+    }
     OrbitTheme(appearance) {
         AmbientBackground(Modifier.fillMaxSize()) {
             if (state.session == null || state.addingServer)
@@ -99,12 +133,25 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                         model.login(server, username, password, controller)
                     },
                     if (state.session != null) ({ model.addServer(false) }) else null,
+                    options = state.loginOptions,
+                    optionsAddress = state.optionsAddress,
+                    onOptions = model::loadLoginOptions,
+                    onProvider = { address, provider ->
+                        model.startOidc(address, provider, controller)
+                    },
                 )
             else
-                Scaffold(
-                    containerColor = Color.Transparent,
+                AdaptiveAppScaffold(
+                    selectedTab = selectedTab,
+                    onTab = selectTab,
                     topBar = {
-                        if (!showDashboard && !showLibrary && !showActivity)
+                        if (
+                            !showDashboard &&
+                                !showLibrary &&
+                                !showActivity &&
+                                !showNotebook &&
+                                !showRequests
+                        )
                             TopAppBar(
                                 colors =
                                     TopAppBarDefaults.topAppBarColors(
@@ -152,29 +199,32 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                                     showPlayer = true
                                 }
                             }
-                            OrbitTabBar(
-                                if (showLibrary) 4
-                                else if (showDashboard) 0
-                                else if (showEbooks) 2 else if (state.offline) 3 else 1
-                            ) { tab ->
-                                showLibrary = tab == 4
-                                showActivity = false
-                                showDashboard = tab == 0
-                                showEbooks = tab == 2
-                                if (tab == 1 || tab == 3) model.setOffline(tab == 3)
-                            }
+                            if (!rail) OrbitTabBar(selectedTab, selectTab)
                         }
                     },
                 ) { padding ->
                     Crossfade(
                         targetState =
-                            if (showActivity) "activity"
+                            if (showRequests) "requests"
+                            else if (showNotebook) "notebook"
+                            else if (showActivity) "activity"
                             else if (showLibrary) "library"
                             else if (showDashboard) "home" else if (showEbooks) "read" else "audio",
                         animationSpec = tween(160),
                         label = "Screen transition",
                     ) { screen ->
-                        if (screen == "activity")
+                        if (screen == "requests")
+                            BookRequestsScreen(state.session!!, Modifier.padding(padding)) {
+                                showRequests = false
+                            }
+                        else if (screen == "notebook")
+                            NotebookScreen(
+                                state.session!!,
+                                Modifier.padding(padding),
+                                onBack = { showNotebook = false },
+                                onAudio = model::select,
+                            )
+                        else if (screen == "activity")
                             ReadingActivityScreen(state.session!!, Modifier.padding(padding)) {
                                 showActivity = false
                             }
@@ -202,6 +252,8 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                                 onAppearance = { showAppearance = true },
                                 onActivity = { showActivity = true },
                                 onServers = { showServers = true },
+                                onNotebook = { showNotebook = true },
+                                onRequests = { showRequests = true },
                                 onLibrary = {
                                     showDashboard = false
                                     showLibrary = true
@@ -358,10 +410,15 @@ private fun SignIn(
     error: String?,
     login: (String, String, String) -> Unit,
     onCancel: (() -> Unit)? = null,
+    options: LoginOptions? = null,
+    optionsAddress: String? = null,
+    onOptions: (String) -> Unit = {},
+    onProvider: (String, OidcProvider) -> Unit = { _, _ -> },
 ) {
     var server by rememberSaveable { mutableStateOf("") }
     var username by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    val currentOptions = options.takeIf { optionsAddress == server.trim() }
     BackHandler(onCancel != null && !busy) { onCancel?.invoke() }
     Column(
         Modifier.fillMaxSize()
@@ -407,39 +464,68 @@ private fun SignIn(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
-            OutlinedTextField(
-                username,
-                { username = it },
-                label = { Text("Username") },
-                singleLine = true,
+            OutlinedButton(
+                onClick = { onOptions(server) },
+                enabled = !busy && server.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !busy,
-            )
-            OutlinedTextField(
-                password,
-                { password = it },
-                label = { Text("Password") },
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !busy,
-            )
-            error?.let { ErrorNotice(it) }
-            Button(
-                onClick = {
-                    val supplied = password
-                    password = ""
-                    login(server, username, supplied)
-                },
-                enabled =
-                    !busy && server.isNotBlank() && username.isNotBlank() && password.isNotEmpty(),
-                modifier = Modifier.fillMaxWidth().height(52.dp),
             ) {
-                Text(if (busy) "Connecting…" else "Connect to library")
+                Text("Load sign-in options")
+            }
+            currentOptions
+                ?.oidcProviders
+                ?.filter { it.enabled }
+                ?.forEach { provider ->
+                    Button(
+                        onClick = {
+                            password = ""
+                            onProvider(server, provider)
+                        },
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Continue with ${provider.displayName}")
+                    }
+                }
+            if (currentOptions?.passwordLoginEnabled != false) {
+                OutlinedTextField(
+                    username,
+                    { username = it },
+                    label = { Text("Username") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
+                )
+                OutlinedTextField(
+                    password,
+                    { password = it },
+                    label = { Text("Password") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
+                )
+            }
+            error?.let { ErrorNotice(it) }
+            if (currentOptions?.passwordLoginEnabled != false) {
+                Button(
+                    onClick = {
+                        val supplied = password
+                        password = ""
+                        login(server, username, supplied)
+                    },
+                    enabled =
+                        !busy &&
+                            server.isNotBlank() &&
+                            username.isNotBlank() &&
+                            password.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                ) {
+                    Text(if (busy) "Connecting…" else "Connect to library")
+                }
             }
             Text(
-                "An independent, open-source BookOrbit client. Password sign-in is supported in this first version.",
+                "An independent, open-source BookOrbit client. Provider sign-in opens your browser.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

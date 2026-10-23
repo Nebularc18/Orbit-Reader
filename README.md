@@ -20,7 +20,25 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 The Gradle wrapper includes a distribution checksum. SDK paths belong in an untracked `local.properties` or `ANDROID_HOME`.
 
-Use the server's root URL, including its reverse-proxy path if present. A trailing `/api/v1` is accepted. HTTPS is preferred. HTTP is supported for trusted local servers with an explicit message on the sign-in screen. Normal certificate validation stays enabled. Password login must be enabled on the server. OIDC and magic-link sign-in are pending.
+Use the server's root URL, including its reverse-proxy path if present. A trailing `/api/v1` is accepted. HTTPS is preferred. HTTP is supported for trusted local servers with an explicit message on the sign-in screen. Normal certificate validation stays enabled. Password sign-in is available when enabled on the server. For OIDC, enter the server address, choose Load sign-in options, and select a provider. Provider sign-in opens the system browser and creates a native refresh session. Magic-link sign-in is pending.
+
+## Provider sign-in
+
+OIDC uses BookOrbit's public login-options and provider-state APIs, PKCE with S256, a fresh nonce, and an exact callback-state check. Pending sign-ins are encrypted with Android Keystore, expire after ten minutes, and are consumed once before exchanging the code. A callback cannot switch accounts after the active account has changed. Existing saved connections remain available. Interrupted exchanges require starting sign-in again.
+
+The server and identity provider must both allow `bookorbit://oauth2-callback`, BookOrbit's default native redirect URI. If the server overrides `NATIVE_REDIRECT_URI`, it must use that exact value for this client. If another app also handles that scheme, choose Orbit Reader in Android's app chooser. Provider authorization endpoints require HTTPS, except a same-origin HTTP endpoint on a trusted local HTTP server. No identity-provider secret is stored in the app. Servers without the login-options endpoint can still use password sign-in.
+
+## Tablet layouts and accessibility
+
+At window widths of 600 dp or more, the app uses a navigation rail. Main content stays within 1200 dp, and the player controls within 640 dp. Catalog covers grow on wider screens; larger system text reduces grid density. Phone windows keep the bottom tabs. Appearance settings scroll when space is limited. Search fields have persistent labels, screen headers expose accessibility headings, and the shared icon actions and time-display toggle have 48 dp touch targets. EPUB and page-reader controls stay visible while Android touch exploration is enabled.
+
+This is an initial adaptive layout and accessibility pass. Physical tablet checks, a full TalkBack session, keyboard navigation, and broader accessibility coverage remain follow-up work.
+
+## Book requests
+
+Open Book requests from Home to submit an ebook or audiobook title with an optional author and note. Your account needs BookOrbit's `book_request_access` permission, and the server must support the book-request API. Requests use the server's approval, availability, duplicate-joining, and quota rules. The personal list shows requests made or joined by the account, with server-side status and format filters and 30-entry pages. Eligible requests you own can be cancelled after confirmation, including a warning that cancellation can stop an active transfer.
+
+Requests require a connection. Submissions are never queued offline or retried automatically after a transport failure; refresh the personal list before resubmitting when the result is uncertain. Provider metadata search, request pairs, destination selection, moderation, and download administration remain available through BookOrbit's web client.
 
 ## Multiple servers
 
@@ -45,7 +63,7 @@ Home links to Activity, which shows server-recorded reading and listening time, 
 - Offline playback from private app storage, scoped by server and account.
 - Local listening positions and queued, revision-checked server updates. Conflicts require an explicit choice between this device and the server.
 
-Wear OS, widgets, and synchronized Read Along are pending. Audiobook bookmarks are implemented. The Downloads tab shows complete and unfinished downloads, account-scoped audio storage usage, and device free space. Resume, retry, pause, and removal are available on the book sheet. Removal is disabled for the active audiobook. Downloads are retained on sign-out and can only be browsed after signing back into the same account.
+Widgets and synchronized Read Along are pending. A Wear OS companion is out of scope. Audiobook bookmarks are implemented. The Downloads tab shows complete and unfinished downloads, account-scoped audio storage usage, and device free space. Resume, retry, pause, and removal are available on the book sheet. Removal is disabled for the active audiobook. Downloads are retained on sign-out and can only be browsed after signing back into the same account.
 
 ## Book tools and playback preferences
 
@@ -60,6 +78,12 @@ Notes and audiobook bookmarks can be exported as Markdown or plain text through 
 Android Auto can browse Continue listening, Downloaded books, Listening queue, and a paged audiobook catalog, with search and server-scoped book selection. Sign in and select the active server on the phone first. A physical head unit or Desktop Head Unit remains necessary to verify the car interface.
 
 EPUB/KEPUB read-aloud uses installed offline Android speech voices, with speed, voice selection, sentence navigation, and sentence highlighting. It reads the open chapter and pauses when leaving the reader. Open the next chapter to continue. PDF/comic read-aloud, background speech controls, and synchronized Read Along are not included.
+
+## Notebook
+
+Open Notebook from Home to browse highlights, reading notes, ebook bookmarks, and audiobook bookmarks saved on this device for the active server account. Search matches words across book titles, authors, entry names, quoted passages, and notes. All, Highlights, Notes, and Bookmarks filters combine with search. Results use 30-entry pages, ordered by ebook file ID followed by audiobook ID, with saved entry order within each file or book. Only one page and one file's annotations are held while searching.
+
+Open an entry to read or copy its full text, edit a reading note, rename a bookmark, or delete its local copy with confirmation. Reading entries can be exported as Markdown or plain text. Go to passage opens the saved EPUB, PDF, or comic location when its matching file is on device. Entries from changed or removed files remain readable, but cannot navigate until matching content is available. Open audiobook opens its information sheet; playback remains an explicit action. Shared server annotations are kept when a local entry is edited or deleted. Notebook refreshes when returning from a reader and never publishes notes or progress automatically.
 
 ## Ebook and comic reading
 
@@ -114,10 +138,10 @@ Public research on October 18, 2026 found the [official server repository](https
 
 The [official iOS release history](https://github.com/bookorbit/bookorbit-ios-support/blob/main/RELEASES.md) and [App Store listing](https://apps.apple.com/us/app/bookorbit-the-official-app/id6811807346) provide the parity baseline:
 
-1. Finish physical audiobook checks for Bluetooth, calls, battery restrictions, and timer expiry, and add listening sessions. Download recovery and management, bookmarks, per-book speed, and configurable skip intervals are implemented.
+1. Finish physical audiobook checks for calls, battery restrictions, and timer expiry, and add listening sessions. The user confirmed Bluetooth worked in testing on October 22, 2026. Download recovery and management, bookmarks, per-book speed, and configurable skip intervals are implemented.
 2. Extend reader coverage with real-world books, remaining ebook formats, PDF selection on older Android versions, and additional CFI variants. Source CFI progress sharing and explicit cross-device annotation sharing are implemented.
-3. Add Read Along, text to speech, Notebook, library organization, requests, uploads, metadata editing, and activity.
-4. Build tablet layouts, accessibility coverage, widgets, Android Auto, and a Wear OS companion. These are Android equivalents of the iPad, CarPlay, and Apple Watch experiences.
+3. Add synchronized Read Along, uploads, and full metadata editing. Personal book requests, EPUB read-aloud, Notebook, library browsing, collection membership, and Activity are implemented.
+4. Extend tablet and accessibility coverage and add widgets. Adaptive navigation, catalog sizing, labelled controls, and touch-exploration reader controls are implemented. Android Auto integration is implemented and needs head-unit verification. A Wear OS companion is out of scope.
 
 Acceptance requires tests with large libraries, account switching, expired tokens, interrupted transfers, offline launches, and concurrent progress changes. Audio playback tests must include real multi-file books, battery restrictions, Bluetooth controls, calls, and screen-off use before calling this production-ready.
 
@@ -159,6 +183,8 @@ adb reverse tcp:4890 tcp:4890
 ```
 
 Sign into `http://127.0.0.1:4890` with the fixture-only username and password `reader`. It provides synthetic two-part audio, a two-chapter EPUB, a three-page PDF, a three-page CBZ, and converted-comic endpoints, not a real library. The Read tab lists the reading fixtures; its On device view can be exercised with the fixture stopped. Check search, playback while backgrounded, chapters, speed, downloads, and offline relaunch after stopping the fixture. Never deploy the fixture as a BookOrbit server.
+
+Add `--oidc --requests-count 65` to enable a synthetic browser sign-in provider and a paged request list for testing. This provider accepts no real identity credentials and is fixture-only.
 
 For private real-audiobook previews, pass `--book-dir /path/to/private-fixture`. That directory must contain a v2 `manifest.json`, `cover.jpg`, and one `<fileId>.<format>` file per manifest asset. Supported fixture formats are M4B, M4A, and MP3. File responses stream in bounded chunks and support byte ranges. Keep audiobook copies and their metadata outside the repository. Playback progress stays in the test server rather than reaching your production library.
 

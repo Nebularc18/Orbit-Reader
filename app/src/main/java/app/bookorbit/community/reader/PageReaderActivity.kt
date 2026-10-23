@@ -45,13 +45,13 @@ class PageReaderActivity : ComponentActivity() {
     private val model: PageReaderViewModel by viewModels()
     private val notesModel: ReadingNotesViewModel by viewModels()
 
-    @OptIn(ExperimentalMaterial3Api::class)
+    @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val owner = intent.getStringExtra("scope").orEmpty()
         val fileId = intent.getIntExtra("fileId", 0)
-        model.load(owner, fileId)
+        model.load(owner, fileId, intent.getStringExtra("noteId"))
         notesModel.load(owner, fileId)
         setContent {
             val state by model.state.collectAsStateWithLifecycle()
@@ -72,8 +72,10 @@ class PageReaderActivity : ComponentActivity() {
             var y by remember(state.page) { mutableFloatStateOf(0f) }
             var viewport by remember { mutableStateOf(IntSize.Zero) }
             ReaderSystemBars(window, controlsVisible, light = false)
-            LaunchedEffect(controlsVisible) {
-                if (controlsVisible) {
+            val touchExploration = rememberTouchExploration()
+            LaunchedEffect(controlsVisible, touchExploration) {
+                if (touchExploration) controlsVisible = true
+                else if (controlsVisible) {
                     delay(6000)
                     controlsVisible = false
                 }
@@ -118,9 +120,9 @@ class PageReaderActivity : ComponentActivity() {
                                         TextButton(onClick = { finish() }) { Text("Close") }
                                     },
                                 )
-                                Row(
+                                FlowRow(
                                     Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceEvenly,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 ) {
                                     TextButton(
                                         onClick = {

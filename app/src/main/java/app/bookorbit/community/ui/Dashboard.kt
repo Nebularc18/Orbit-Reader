@@ -43,6 +43,8 @@ fun Dashboard(
     onActivity: () -> Unit = {},
     onLibrary: () -> Unit = {},
     onServers: () -> Unit = {},
+    onNotebook: () -> Unit = {},
+    onRequests: () -> Unit = {},
 ) {
     val model: DashboardViewModel = viewModel(key = "dashboard-${account.scope}")
     val state by model.state.collectAsStateWithLifecycle()
@@ -228,6 +230,26 @@ fun Dashboard(
                     Spacer(Modifier.width(6.dp))
                     Text("Activity")
                 }
+            }
+        }
+        item(key = "notebook-shortcut") {
+            OutlinedButton(
+                onClick = onNotebook,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            ) {
+                Icon(Icons.Rounded.Bookmarks, null, Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Notebook")
+            }
+        }
+        item(key = "requests-shortcut") {
+            OutlinedButton(
+                onClick = onRequests,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            ) {
+                Icon(Icons.Rounded.Add, null, Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Book requests")
             }
         }
         if (state.goal != null || state.streak != null)

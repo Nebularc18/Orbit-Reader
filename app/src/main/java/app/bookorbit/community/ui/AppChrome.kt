@@ -2,8 +2,10 @@ package app.bookorbit.community.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.LibraryBooks
 import androidx.compose.material.icons.rounded.*
@@ -45,7 +47,7 @@ fun OrbitTabBar(selectedTab: Int, onSelect: (Int) -> Unit) {
                 Surface(
                     onClick = { onSelect(tabIds[index]) },
                     modifier =
-                        Modifier.weight(1f).semantics {
+                        Modifier.weight(1f).heightIn(min = 64.dp).semantics {
                             selected = selectedTab == tabIds[index]
                             role = Role.Tab
                         },
@@ -69,6 +71,9 @@ fun OrbitTabBar(selectedTab: Int, onSelect: (Int) -> Unit) {
                             style = MaterialTheme.typography.labelSmall,
                             color = tint,
                             fontSize = 10.sp,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                         )
                     }
                 }
@@ -93,7 +98,10 @@ fun AppearanceSheet(
     ) {
         SystemBarAppearance(MaterialTheme.colorScheme.surface.luminance() > .5f)
         Column(
-            Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 28.dp),
+            Modifier.fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             Text("Make yourself at home", style = MaterialTheme.typography.titleLarge)

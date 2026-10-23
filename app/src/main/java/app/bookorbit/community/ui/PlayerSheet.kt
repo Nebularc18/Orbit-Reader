@@ -135,7 +135,9 @@ fun PlayerSheet(
             )
         }
         Column(
-            Modifier.fillMaxWidth()
+            Modifier.align(Alignment.TopCenter)
+                .widthIn(max = 640.dp)
+                .fillMaxWidth()
                 .statusBarsPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp)

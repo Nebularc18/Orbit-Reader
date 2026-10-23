@@ -1,19 +1,28 @@
 package app.bookorbit.community
 
 import android.content.ComponentName
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.compose.runtime.*
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import app.bookorbit.community.playback.PlaybackService
+import app.bookorbit.community.ui.LibraryViewModel
 import app.bookorbit.community.ui.OrbitApp
 
 class MainActivity : ComponentActivity() {
+    private val library: LibraryViewModel by viewModels()
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.action == "app.bookorbit.community.OIDC_COMPLETE") library.acceptSavedSession()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -38,7 +47,7 @@ class MainActivity : ComponentActivity() {
                 )
                 onDispose { MediaController.releaseFuture(future) }
             }
-            OrbitApp(viewModel(), application as OrbitApplication, controller)
+            OrbitApp(library, application as OrbitApplication, controller)
         }
     }
 }
