@@ -38,11 +38,9 @@ The workflow fails if signing secrets are missing and never generates a new key.
 
 ## Publish a version
 
-1. Set `versionName` in `app/build.gradle.kts`, for example `0.1.0`. Increase
-   `versionCode` for every subsequent release. The initial version code is `1`.
-2. Commit and push the release changes, including the workflow. The tag must
-   include this workflow and its version name must match the app's `versionName`.
-3. Create and push the matching tag:
+1. Commit and push the release changes, including the workflow. No version edits
+   in `app/build.gradle.kts` are needed. The tagged commit must include this workflow.
+2. Choose a version and create its tag on GitHub, or create and push it locally:
 
    ```sh
    git tag -a v0.1.0 -m "Release 0.1.0"
@@ -52,8 +50,16 @@ The workflow fails if signing secrets are missing and never generates a new key.
 The workflow runs formatting checks, unit tests, debug and release lint, and both
 builds. It signs the release APK, verifies its signature and alignment, and
 publishes `orbit-reader-v0.1.0.apk` plus `SHA256SUMS` with generated release notes.
-Tags such as `v0.2.0-beta.1` become prereleases and require the matching
-`versionName`, such as `0.2.0-beta.1`.
+The tag sets the APK's displayed version automatically: `v0.1.0` produces
+`0.1.0`. Tags such as `v0.2.0-beta.1` produce `0.2.0-beta.1` and become prereleases.
+Use the tag field on GitHub, not the release title, to choose the version.
+
+The internal Android `versionCode` is the release workflow's GitHub run number
+plus one, so it increases with each new run and stays above the original code of
+`1`. Retrying the same run keeps the same code. Publish versions in order and
+retry failed runs before publishing a newer version. Keep this workflow's run
+counter when maintaining release automation. Local builds default to version
+`0.0.0-dev` and code `1`.
 
 Publishing starts with a draft so a failed upload cannot expose a release with
 missing assets. If publishing fails after creating the draft, delete that draft
