@@ -1,7 +1,6 @@
 package app.bookorbit.community.reader
 
 import android.content.ClipData
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -73,8 +72,11 @@ class PageReaderActivity : ComponentActivity() {
             var viewport by remember { mutableStateOf(IntSize.Zero) }
             ReaderSystemBars(window, controlsVisible, light = false)
             val touchExploration = rememberTouchExploration()
-            LaunchedEffect(controlsVisible, touchExploration) {
-                if (touchExploration) controlsVisible = true
+            val keyboardNavigation =
+                androidx.compose.ui.platform.LocalInputModeManager.current.inputMode ==
+                    androidx.compose.ui.input.InputMode.Keyboard
+            LaunchedEffect(controlsVisible, touchExploration, keyboardNavigation) {
+                if (touchExploration || keyboardNavigation) controlsVisible = true
                 else if (controlsVisible) {
                     delay(6000)
                     controlsVisible = false
@@ -143,6 +145,16 @@ class PageReaderActivity : ComponentActivity() {
                                         Text("Bookmark")
                                     }
                                     TextButton(onClick = { showNotes = true }) { Text("Notes") }
+                                    if (
+                                        state.book?.file?.format?.lowercase() in
+                                            setOf("pdf", "fb2", "mobi")
+                                    )
+                                        TextButton(
+                                            onClick = model::readPageText,
+                                            enabled = !state.busy,
+                                        ) {
+                                            Text("Page text")
+                                        }
                                     TextButton(
                                         onClick = { showSync = true },
                                         enabled = state.count > 0,
@@ -185,7 +197,7 @@ class PageReaderActivity : ComponentActivity() {
                                                 else "Highlight area"
                                             )
                                         }
-                                        if (Build.VERSION.SDK_INT >= 35)
+                                        if (state.book?.file?.format?.lowercase() == "pdf")
                                             TextButton(
                                                 onClick = {
                                                     controlsVisible = false
@@ -254,7 +266,10 @@ class PageReaderActivity : ComponentActivity() {
                     },
                 ) { padding ->
                     Column(
-                        Modifier.fillMaxSize().consumeWindowInsets(padding).displayCutoutPadding()
+                        Modifier.fillMaxSize()
+                            .padding(padding)
+                            .consumeWindowInsets(padding)
+                            .displayCutoutPadding()
                     ) {
                         if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                         state.error?.let {
@@ -379,6 +394,35 @@ class PageReaderActivity : ComponentActivity() {
                         }
                     }
                 }
+                state.pageText?.let { text ->
+                    AlertDialog(
+                        onDismissRequest = model::closePageText,
+                        title = { Text("Page ${state.page + 1} text") },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                                else {
+                                    Text(
+                                        "Text from this page. Up to 32,000 characters are shown.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    SelectionContainer {
+                                        Text(
+                                            text.ifBlank {
+                                                "This page has no text layer. Scanned pages need OCR."
+                                            },
+                                            Modifier.heightIn(max = 380.dp)
+                                                .verticalScroll(rememberScrollState()),
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = model::closePageText) { Text("Close") }
+                        },
+                    )
+                }
                 state.selection?.let { selection ->
                     var copied by remember(selection) { mutableStateOf(false) }
                     AlertDialog(
@@ -477,12 +521,19 @@ class PageReaderActivity : ComponentActivity() {
                         fileId,
                         EbookProgressWrite(
                             (state.page + 1) * 100.0 / state.count.coerceAtLeast(1),
-                            state.page + 1,
+                            (state.page + 1).takeUnless {
+                                state.book?.file?.format?.lowercase() in setOf("fb2", "mobi")
+                            },
                         ),
                         { showSync = false },
                     ) { remote ->
                         model.go(
-                            ((remote.pageNumber?.minus(1))
+                            ((remote.pageNumber
+                                    ?.takeUnless {
+                                        state.book?.file?.format?.lowercase() in
+                                            setOf("fb2", "mobi")
+                                    }
+                                    ?.minus(1))
                                     ?: ((remote.percentage / 100) * state.count).toInt())
                                 .coerceIn(0, state.count - 1)
                         )

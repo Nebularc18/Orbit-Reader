@@ -5,8 +5,6 @@ import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Point
 import android.graphics.pdf.PdfRenderer
-import android.graphics.pdf.models.selection.SelectionBoundary
-import android.os.Build
 import android.os.ParcelFileDescriptor
 import app.bookorbit.community.data.AnnotationRect
 import java.io.Closeable
@@ -35,7 +33,7 @@ fun naturalPageCompare(left: String, right: String): Int {
     return a.size.compareTo(b.size).takeIf { it != 0 } ?: left.compareTo(right)
 }
 
-class PagedDocument(file: File, pdf: Boolean) : Closeable {
+class PagedDocument(private val file: File, pdf: Boolean, reflowable: Boolean = false) : Closeable {
     private val descriptor =
         if (pdf) ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY) else null
     private val renderer =
@@ -47,7 +45,20 @@ class PagedDocument(file: File, pdf: Boolean) : Closeable {
                 throw error
             }
         }
-    private val zip = if (pdf) null else ZipFile(file)
+    private val extended =
+        if (reflowable)
+            com.artifex.mupdf.fitz.Document.openDocument(file.absolutePath).apply {
+                try {
+                    require(!needsPassword()) { "Encrypted ebooks are not supported." }
+                    if (isReflowable) layout(600f, 800f, 18f)
+                } catch (e: Exception) {
+                    destroy()
+                    throw e
+                }
+            }
+        else null
+    private var textDocument: com.artifex.mupdf.fitz.Document? = null
+    private val zip = if (pdf || reflowable) null else ZipFile(file)
     private val images =
         zip?.entries()
             ?.asSequence()
@@ -61,7 +72,7 @@ class PagedDocument(file: File, pdf: Boolean) : Closeable {
             ?.toList()
             ?.sortedWith(::naturalPageCompare)
             .orEmpty()
-    val pageCount = renderer?.pageCount ?: images.size
+    val pageCount = renderer?.pageCount ?: extended?.countPages() ?: images.size
 
     init {
         if (pageCount !in 1..20000) {
@@ -72,41 +83,123 @@ class PagedDocument(file: File, pdf: Boolean) : Closeable {
         }
     }
 
-    fun dimensions(index: Int): Pair<Double, Double> =
-        renderer?.openPage(index)?.use { it.width.toDouble() to it.height.toDouble() }
-            ?: (1.0 to 1.0)
+    fun dimensions(index: Int): Pair<Double, Double> {
+        renderer?.openPage(index)?.use {
+            return it.width.toDouble() to it.height.toDouble()
+        }
+        extended?.loadPage(index)?.let { page ->
+            try {
+                val bounds = page.bounds
+                return (bounds.x1 - bounds.x0).toDouble() to (bounds.y1 - bounds.y0).toDouble()
+            } finally {
+                page.destroy()
+            }
+        }
+        return 1.0 to 1.0
+    }
+
+    fun pageText(index: Int): String {
+        val doc =
+            extended
+                ?: if (renderer != null) {
+                    textDocument
+                        ?: com.artifex.mupdf.fitz.Document.openDocument(file.absolutePath).also {
+                            textDocument = it
+                        }
+                } else return ""
+        val page = doc.loadPage(index)
+        try {
+            val bounds = page.bounds
+            val text = page.toStructuredText("")
+            try {
+                return text
+                    .copy(
+                        com.artifex.mupdf.fitz.Point(bounds.x0, bounds.y0),
+                        com.artifex.mupdf.fitz.Point(bounds.x1, bounds.y1),
+                    )
+                    .trim()
+                    .take(32000)
+            } finally {
+                text.destroy()
+            }
+        } finally {
+            page.destroy()
+        }
+    }
 
     fun selectText(index: Int, ax: Double, ay: Double, bx: Double, by: Double): PdfTextSelection? {
-        if (Build.VERSION.SDK_INT < 35) return null
-        return renderer?.openPage(index)?.use { page ->
-            fun boundary(x: Double, y: Double) =
-                SelectionBoundary(
-                    Point(x.toInt().coerceIn(0, page.width), y.toInt().coerceIn(0, page.height))
+        if (renderer == null) return null
+        val doc =
+            textDocument
+                ?: com.artifex.mupdf.fitz.Document.openDocument(file.absolutePath).also {
+                    textDocument = it
+                }
+        val page = doc.loadPage(index)
+        try {
+            val bounds = page.bounds
+            val (width, height) = dimensions(index)
+            val sx = (bounds.x1 - bounds.x0) / width
+            val sy = (bounds.y1 - bounds.y0) / height
+            val a =
+                com.artifex.mupdf.fitz.Point(
+                    (ax * sx + bounds.x0).toFloat(),
+                    (ay * sy + bounds.y0).toFloat(),
                 )
-            val selection = page.selectContent(boundary(ax, ay), boundary(bx, by)) ?: return null
-            val contents = selection.selectedTextContents
-            if (contents.size > 1000) return null
-            pdfTextSelection(
-                index,
-                page.width.toDouble(),
-                page.height.toDouble(),
-                contents.map { content ->
-                    content.text to
-                        content.bounds.map { rect ->
-                            AnnotationRect(
-                                rect.left.toDouble(),
-                                rect.top.toDouble(),
-                                rect.width().toDouble(),
-                                rect.height().toDouble(),
-                            )
+            val b =
+                com.artifex.mupdf.fitz.Point(
+                    (bx * sx + bounds.x0).toFloat(),
+                    (by * sy + bounds.y0).toFloat(),
+                )
+            val text = page.toStructuredText("")
+            try {
+                text.snapSelection(a, b, com.artifex.mupdf.fitz.StructuredText.SELECT_WORDS)
+                val quote = text.copy(a, b)
+                if (quote.length > 10000) return null
+                val rects =
+                    text.highlight(a, b).take(1001).map { quad ->
+                        val r = quad.toRect()
+                        AnnotationRect(
+                            (r.x0 - bounds.x0) / sx,
+                            (r.y0 - bounds.y0) / sy,
+                            (r.x1 - r.x0) / sx,
+                            (r.y1 - r.y0) / sy,
+                        )
+                    }
+                if (
+                    kotlin.math.abs(ax - bx) < 3 &&
+                        kotlin.math.abs(ay - by) < 3 &&
+                        rects.none {
+                            ax >= it.x &&
+                                ax <= it.x + it.width &&
+                                ay >= it.y &&
+                                ay <= it.y + it.height
                         }
-                },
-            )
+                )
+                    return null
+                return pdfTextSelection(index, width, height, listOf(quote to rects))
+            } finally {
+                text.destroy()
+            }
+        } finally {
+            page.destroy()
         }
     }
 
     fun render(index: Int): Bitmap {
         require(index in 0 until pageCount)
+        extended?.loadPage(index)?.let { page ->
+            try {
+                val bounds = page.bounds
+                val scale =
+                    2048f / maxOf(bounds.x1 - bounds.x0, bounds.y1 - bounds.y0).coerceAtLeast(1f)
+                return com.artifex.mupdf.fitz.android.AndroidDrawDevice.drawPage(
+                    page,
+                    com.artifex.mupdf.fitz.Matrix(scale),
+                )
+            } finally {
+                page.destroy()
+            }
+        }
         renderer?.let { pdf ->
             return pdf.openPage(index).use { page ->
                 val ratio = 2048.0 / max(page.width, page.height).coerceAtLeast(1)
@@ -145,6 +238,8 @@ class PagedDocument(file: File, pdf: Boolean) : Closeable {
     }
 
     override fun close() {
+        textDocument?.destroy()
+        extended?.destroy()
         renderer?.close()
         descriptor?.close()
         zip?.close()

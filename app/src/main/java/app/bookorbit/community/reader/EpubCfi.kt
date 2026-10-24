@@ -122,7 +122,14 @@ object EpubCfiSyntax {
         val body = withoutAssertions(value.substring(8, value.length - 1)) ?: return null
         val parts = body.split('!')
         if (parts.size != 2 || !Regex("(?:/[1-9][0-9]*){2}").matches(parts[0])) return null
-        val range = parts[1].split(',')
+        val range =
+            parts[1].split(',').map { component ->
+                if (';' !in component) component
+                else {
+                    if (!component.matches(Regex("[^;]+;s=[ab]"))) return null
+                    component.substringBefore(';')
+                }
+            }
         val start: String
         val end: String?
         if (range.size == 1) {

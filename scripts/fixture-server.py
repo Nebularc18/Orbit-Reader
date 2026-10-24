@@ -18,6 +18,9 @@ import secrets
 import hashlib
 import base64
 import html
+import uuid
+from email.parser import BytesParser
+from email.policy import default as email_policy
 import time
 from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,7 +42,9 @@ def ebook():
         archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
         archive.writestr("META-INF/container.xml", '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="EPUB/package.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
         archive.writestr("EPUB/package.opf", '''<?xml version="1.0" encoding="UTF-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">orbit-synthetic-ebook</dc:identifier><dc:title>A Quiet Orbit</dc:title><dc:language>en</dc:language><dc:creator>Orbit Test Reader</dc:creator><meta property="dcterms:modified">2026-10-20T00:00:00Z</meta></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="one" href="one.xhtml" media-type="application/xhtml+xml"/><item id="two" href="two.xhtml" media-type="application/xhtml+xml"/><item id="image" href="orbit.svg" media-type="image/svg+xml"/></manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>''')
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">orbit-synthetic-ebook</dc:identifier><dc:title>A Quiet Orbit</dc:title><dc:language>en</dc:language><dc:creator>Orbit Test Reader</dc:creator><meta property="dcterms:modified">2026-10-20T00:00:00Z</meta></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="one" href="one.xhtml" media-type="application/xhtml+xml" media-overlay="smil"/><item id="two" href="two.xhtml" media-type="application/xhtml+xml"/><item id="image" href="orbit.svg" media-type="image/svg+xml"/><item id="smil" href="one.smil" media-type="application/smil+xml"/><item id="narration" href="narration.wav" media-type="audio/wav"/></manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>''')
+        archive.writestr("EPUB/one.smil", '<smil xmlns="http://www.w3.org/ns/SMIL" version="3.0"><body><seq><par><text src="one.xhtml#p0"/><audio src="narration.wav" clipBegin="0s" clipEnd="10s"/></par><par><text src="one.xhtml#p1"/><audio src="narration.wav" clipBegin="10s" clipEnd="20s"/></par></seq></body></smil>')
+        archive.writestr("EPUB/narration.wav", audio(440))
         archive.writestr("EPUB/nav.xhtml", '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="one.xhtml">Departure</a></li><li><a href="two.xhtml#arrival">Arrival</a></li></ol></nav></body></html>')
         for name, title in [("one", "Departure"), ("two", "Arrival")]:
             paragraphs = "".join(f'<p id="p{n}">Passage {n + 1}. The little observatory watched a quiet moon rise above the hills. This synthetic story tests page turns, text size, images, and a reading position that survives closing the app.</p>' for n in range(36))
@@ -92,13 +97,21 @@ READING_PROGRESS={}
 
 
 EPUB = ebook()
-EBOOK_FILE = {"id": 101, "format": "epub", "filename": "A Quiet Orbit.epub", "role": "main", "sizeBytes": len(EPUB), "fileHash": "orbit-epub-v1"}
+EBOOK_FILE = {"id": 101, "format": "epub", "filename": "A Quiet Orbit.epub", "role": "main", "sizeBytes": len(EPUB), "fileHash": "orbit-epub-v2-readalong"}
 EBOOK = {"id": 2, "title": "A Quiet Orbit · Reading Test", "authors": [{"name": "Orbit Test Reader"}], "files": [EBOOK_FILE]}
 
 PDF_BOOK={"id":3,"title":"Orbit PDF Test","authors":[{"name":"Orbit Test Reader"}],"files":[{"id":102,"format":"pdf","filename":"Orbit.pdf","sizeBytes":len(PDF),"fileHash":"pdf-v1"}]}
 COMIC_BOOK={"id":4,"title":"Orbit Comic Test","authors":[{"name":"Orbit Test Reader"}],"files":[{"id":103,"format":"cbz","filename":"Orbit.cbz","sizeBytes":len(CBZ),"fileHash":"cbz-v1"}]}
 CONVERTED_BOOK={"id":5,"title":"Orbit Converted Comic Test","authors":[{"name":"Orbit Test Reader"}],"files":[{"id":104,"format":"cbr","filename":"Orbit.cbr","fileHash":"cbr-v1"},{"id":105,"format":"cb7","filename":"Orbit.cb7","fileHash":"cb7-v1"}]}
-DOCUMENTS={2:EBOOK,3:PDF_BOOK,4:COMIC_BOOK,5:CONVERTED_BOOK}
+FB2 = ('<?xml version="1.0" encoding="UTF-8"?><FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0"><description><title-info><genre>sf</genre><author><first-name>Orbit</first-name><last-name>Reader</last-name></author><book-title>Orbit FB2 Test</book-title><lang>en</lang></title-info></description><body><section><title><p>Departure</p></title>' + ''.join('<p>Passage %s. A quiet moon crossed the observatory. This is a synthetic FB2 reading test.</p>' % i for i in range(100)) + '</section></body></FictionBook>').encode()
+FB2_BOOK={"id":7,"title":"Orbit FB2 Test","authors":[{"name":"Orbit Test Reader"}],"files":[{"id":106,"format":"fb2","filename":"Orbit.fb2","sizeBytes":len(FB2),"fileHash":"fb2-v1"}]}
+DOCUMENTS={2:EBOOK,3:PDF_BOOK,4:COMIC_BOOK,5:CONVERTED_BOOK,7:FB2_BOOK}
+UPLOADS = {}
+UPLOAD_DELAY_SECONDS = 0.0
+METADATA = {}
+EXTRA_EBOOKS = {}
+UPLOAD_CAPS = {"maxFileSizeBytes": 67108864, "chunkSizeBytes": 65536, "supportedFormats": ["epub", "pdf", "fb2", "mobi"], "canUploadToLibrary": True, "libraries": [{"id":1,"name":"Synthetic library","allowedFormats":["epub","pdf","fb2","mobi"],"folders":[{"id":1,"name":"Books"}],"organizationMode":"folder"}]}
+
 ANNOTATIONS = {}
 NEXT_ANNOTATION = 1
 
@@ -121,10 +134,12 @@ BOOK_DIR = None
 
 
 class Handler(BaseHTTPRequestHandler):
-    def send_json(self, value, status=200):
+    protocol_version = "HTTP/1.1"
+    def send_json(self, value, status=200, cookie=None):
         payload = b"" if status == 204 else json.dumps(value).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        if cookie: self.send_header("Set-Cookie", cookie)
         self.send_header("Content-Length", len(payload))
         self.end_headers()
         self.wfile.write(payload)
@@ -139,7 +154,47 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def do_POST(self):
+        chunk = re.fullmatch(r'/api/v1/uploads/([0-9a-f-]+)/chunks', self.path)
+        if chunk:
+            if not self.authorized(): return
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 < length <= 4198400: return self.send_json({}, 413)
+            body = self.rfile.read(length)
+            message = BytesParser(policy=email_policy).parsebytes(('Content-Type: '+self.headers.get('Content-Type','')+'\r\nMIME-Version: 1.0\r\n\r\n').encode()+body)
+            parts = list(message.iter_parts())
+            if len(parts) != 1 or parts[0].get_param('name', header='content-disposition') != 'file': return self.send_json({},400)
+            payload = parts[0].get_payload(decode=True)
+            with LOCK:
+                row = UPLOADS.get(chunk[1])
+                if not row: return self.send_json({},404)
+                if row['status'] != 'receiving' or self.headers.get('Upload-Offset') != str(row['receivedBytes']): return self.send_json({},409)
+                if len(payload) > row['chunkSizeBytes'] or row['receivedBytes'] + len(payload) > row['sizeBytes'] or self.headers.get('Upload-Checksum') != hashlib.sha256(payload).hexdigest(): return self.send_json({},400)
+                row['receivedBytes'] += len(payload)
+                reply = dict(row)
+            if UPLOAD_DELAY_SECONDS: time.sleep(UPLOAD_DELAY_SECONDS)
+            return self.send_json(reply)
         data = self.body()
+        if self.path == '/api/v1/auth/magic-links/login':
+            if data != {'token':'fixture-magic'}: return self.send_json({},401)
+            return self.send_json({'accessToken':'fixture-access','user':{'id':1,'name':'Reader','username':'reader','isSuperuser':False,'permissions':['library_download','library_edit_metadata','library_upload','book_request_access']}}, cookie='refresh_token='+'b'*64+'; HttpOnly; Path=/api/v1/auth; SameSite=Lax')
+        if self.path == '/api/v1/uploads':
+            if not self.authorized(): return
+            if set(data) != {'filename','sizeBytes','idempotencyKey','target'} or data['target'].get('libraryId') != 1 or data['target'].get('kind') != 'library' or not 0 < data['sizeBytes'] <= UPLOAD_CAPS['maxFileSizeBytes']: return self.send_json({},400)
+            with LOCK:
+                existing = next((row for row in UPLOADS.values() if row['idempotencyKey'] == data['idempotencyKey']),None)
+                if existing: return self.send_json(existing)
+                row = dict(data, id=str(uuid.uuid4()), receivedBytes=0, chunkSizeBytes=65536, status='receiving', bookId=None)
+                UPLOADS[row['id']] = row
+            return self.send_json(row,201)
+        complete = re.fullmatch(r'/api/v1/uploads/([0-9a-f-]+)/complete', self.path)
+        if complete:
+            if not self.authorized(): return
+            with LOCK:
+                row = UPLOADS.get(complete[1])
+                if not row: return self.send_json({},404)
+                if data or row['receivedBytes'] != row['sizeBytes']: return self.send_json({},400)
+                row.update(status='completed',bookId=7)
+                return self.send_json(row)
         if self.path == "/api/v1/auth/oidc/fixture/state" and OIDC_FIXTURE:
             state = secrets.token_urlsafe(32)
             OIDC_STATES[state] = time.time()
@@ -152,12 +207,14 @@ class Handler(BaseHTTPRequestHandler):
             challenge = base64.urlsafe_b64encode(hashlib.sha256(data['codeVerifier'].encode()).digest()).decode().rstrip('=')
             if data['state'] != saved['state'] or data['nonce'] != saved['nonce'] or challenge != saved['challenge'] or data['redirectUri'] != 'bookorbit://oauth2-callback' or time.time() - saved['created'] > 600:
                 return self.send_json({}, 401)
-            return self.send_json({"mode": "login", "accessToken": "fixture-access", "refreshToken": "a" * 64, "user": {"id": 1, "name": "Reader", "username": "reader", "isSuperuser": False, "permissions": ["library_download", "library_edit_metadata", "book_request_access"]}})
+            return self.send_json({"mode": "login", "accessToken": "fixture-access", "refreshToken": "a" * 64, "user": {"id": 1, "name": "Reader", "username": "reader", "isSuperuser": False, "permissions": ["library_download", "library_edit_metadata", "library_upload", "book_request_access"]}})
         if self.path == "/api/v1/auth/login":
             if data.get("username") != "reader" or data.get("password") != "reader" or data.get("clientKind") != "native":
                 return self.send_json({}, 401)
-            return self.send_json({"accessToken": "fixture-access", "refreshToken": "a" * 64, "user": {"id": 1, "name": "Reader", "username": "reader", "isSuperuser": False, "permissions": ["library_download", "library_edit_metadata", "book_request_access"]}})
+            return self.send_json({"accessToken": "fixture-access", "refreshToken": "a" * 64, "user": {"id": 1, "name": "Reader", "username": "reader", "isSuperuser": False, "permissions": ["library_download", "library_edit_metadata", "library_upload", "book_request_access"]}})
         if self.path == "/api/v1/auth/refresh":
+            if not data and self.headers.get('Cookie') == 'refresh_token='+'b'*64:
+                return self.send_json({'accessToken':'fixture-access'}, cookie='refresh_token='+'b'*64+'; HttpOnly; Path=/api/v1/auth; SameSite=Lax')
             return self.send_json({"accessToken": "fixture-access", "refreshToken": "a" * 64})
         if self.path == "/api/v1/auth/logout":
             return self.send_json({})
@@ -210,7 +267,7 @@ class Handler(BaseHTTPRequestHandler):
                 books.append(dict(MANIFEST["book"], id=6, title="A Quiet Orbit · Next Audio Test"))
             if not formats or "epub" in formats or "kepub" in formats:
                 books.append({"id": 2, "title": EBOOK["title"], "authors": ["Orbit Test Reader"]})
-            for entry in [PDF_BOOK, COMIC_BOOK, CONVERTED_BOOK]:
+            for entry in [book for book in DOCUMENTS.values() if book["id"] != 2]:
                 if not formats or any(file['format'] in formats for file in entry['files']):
                     books.append({"id":entry['id'],"title":entry['title'],"authors":["Orbit Test Reader"]})
             if any(value in formats for value in ["mp3", "m4b", "m4a"]):
@@ -236,7 +293,7 @@ class Handler(BaseHTTPRequestHandler):
                 items.sort(key=lambda row: sort_value(row, spec['field']), reverse=spec['dir'] == 'desc')
             page, size = data['pagination']['page'], data['pagination']['size']
             return self.send_json({"items": items[page*size:(page+1)*size], "total": len(items), "page": page, "size": size})
-        match=re.fullmatch(r"/api/v1/books/files/(10[1-5])/progress",self.path)
+        match=re.fullmatch(r"/api/v1/books/files/(10[1-9])/progress",self.path)
         if match:
             if set(data)-{"percentage","pageNumber","cfi","source"} or not 0<=data.get("percentage",-1)<=100:
                 return self.send_json({},400)
@@ -258,6 +315,18 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(row)
 
     def do_PATCH(self):
+        metadata = re.fullmatch(r'/api/v1/books/(\d+)/metadata', self.path)
+        if metadata:
+            if not self.authorized(): return
+            data = self.body()
+            allowed = {'title','subtitle','description','publisher','publishedDate','publishedYear','language','pageCount','seriesName','seriesIndex','seriesMemberships','isbn10','isbn13','rating','communityRatings','authors','genres','tags','googleBooksId','goodreadsId','amazonId','hardcoverId','hardcoverEditionId','openLibraryId','itunesId','audibleId','librofmId','koboId','audioMetadata','comicvineId','ranobedbId','lubimyczytacId','aladinId','comicMetadata','customMetadata'}
+            if set(data) - allowed: return self.send_json({},400)
+            with LOCK:
+                current = METADATA.setdefault(int(metadata[1]),{})
+                for key,value in data.items():
+                    if key in ['audioMetadata','comicMetadata']: current.setdefault(key,{}).update(value)
+                    else: current[key] = value
+            return self.send_json({})
         match = re.fullmatch(r'/api/v1/books/(\d+)/status',self.path)
         if match:
             if not self.authorized(): return
@@ -279,6 +348,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        if parsed.path == '/fixture/upload-sample.epub': return self.send_bytes(EPUB, 'application/epub+zip')
         if parsed.path == '/api/v1/auth/login-options':
             providers = [{'slug': 'fixture', 'displayName': 'Synthetic provider', 'enabled': True, 'clientId': 'orbit-fixture', 'scopes': 'openid profile'}] if OIDC_FIXTURE else []
             return self.send_json({'passwordLoginEnabled': True, 'allowRegistration': False, 'oidcProviders': providers})
@@ -294,6 +364,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_bytes(f'<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><h1>Synthetic provider</h1><p>Test sign-in only. No real identity provider is connected.</p><a href="{target}">Continue to Orbit Reader</a></body></html>'.encode(), 'text/html')
         if not self.authorized():
             return
+        if parsed.path == '/api/v1/uploads/capabilities': return self.send_json(UPLOAD_CAPS)
+        upload = re.fullmatch(r'/api/v1/uploads/([0-9a-f-]+)',parsed.path)
+        if upload: return self.send_json(UPLOADS[upload[1]]) if upload[1] in UPLOADS else self.send_json({},404)
         if parsed.path == '/api/v1/book-requests':
             page = max(1, int(query.get('page', ['1'])[0])); limit = min(100, max(1, int(query.get('limit', ['30'])[0])))
             with LOCK:
@@ -361,20 +434,27 @@ class Handler(BaseHTTPRequestHandler):
             rows = [row for row in ANNOTATIONS.values() if row['bookId'] == int(match[1]) and row['jumpFileId'] == file_id]
             rows.sort(key=lambda row: row['id'], reverse=True)
             return self.send_json({'items': rows[(page-1)*size:page*size], 'total': len(rows), 'page': page})
-        match=re.fullmatch(r"/api/v1/books/([1-6])",self.path)
+        match=re.fullmatch(r"/api/v1/books/(\d+)",self.path)
         if match:
             if int(match[1]) in [1,6]:
                 book = dict(MANIFEST['book'], authors=[{'name': name} for name in MANIFEST['book']['authors']], files=[{'id': asset['fileId'], 'format': asset['format'], 'filename': f'Part {asset["sequence"]+1}.mp3', 'sizeBytes': asset['sizeBytes']} for asset in ASSETS])
             else:
+                if int(match[1]) not in DOCUMENTS: return self.send_json({},404)
                 book = DOCUMENTS[int(match[1])]
             book = dict(book, id=int(match[1]), title='A Quiet Orbit · Next Audio Test' if int(match[1])==6 else book['title'])
-            return self.send_json(dict(book, seriesId=1, description='<p>A synthetic journey through a quiet observatory.</p><p>Explore the next chapter.</p><script>throw new Error("blocked")</script>', subtitle='Synthetic verification edition', seriesName='Quiet Orbit', seriesIndex='1', publisher='Orbit Test Press', publishedYear=2026, language='en', pageCount=120, isbn13='9780000000000', rating=BOOK_RATING.get(int(match[1]),4.5), genres=['Fiction', 'Adventure'], tags=['Synthetic'], collections=[{'id':i,'name':f'Collections {i:03}'} for i in sorted(BOOK_COLLECTIONS.get(int(match[1]),{1}))], readStatus={'status':BOOK_STATUS.get(int(match[1]),'reading')}, libraryName='Test library'))
-        match=re.fullmatch(r"/api/v1/books/files/(10[1-5])/progress",self.path)
+            result = dict(book, seriesId=1, description='<p>A synthetic journey through a quiet observatory.</p><p>Explore the next chapter.</p><script>throw new Error("blocked")</script>', subtitle='Synthetic verification edition', seriesName='Quiet Orbit', seriesIndex='1', publisher='Orbit Test Press', publishedYear=2026, language='en', pageCount=120, isbn13='9780000000000', rating=BOOK_RATING.get(int(match[1]),4.5), genres=['Fiction', 'Adventure'], tags=['Synthetic'], collections=[{'id':i,'name':f'Collections {i:03}'} for i in sorted(BOOK_COLLECTIONS.get(int(match[1]),{1}))], readStatus={'status':BOOK_STATUS.get(int(match[1]),'reading')}, libraryName='Test library')
+            result.update(METADATA.get(int(match[1]),{}))
+            if result.get('authors') and isinstance(result['authors'][0],str): result['authors'] = [{'name': name} for name in result['authors']]
+            return self.send_json(result)
+        match=re.fullmatch(r"/api/v1/books/files/(10[1-9])/progress",self.path)
         if match: return self.send_json(READING_PROGRESS.get(int(match[1]),{"percentage":0,"cfi":None,"pageNumber":None,"textUpdatedAt":None}))
         match=re.fullmatch(r"/api/v1/cbz/files/(104|105)/pages(?:/([0-2]))?",self.path)
         if match:
             if match[2] is None: return self.send_json({"pageCount":3})
             return self.send_bytes(COMIC_IMAGES[int(match[2])],"image/png")
+        extra = re.fullmatch(r'/api/v1/books/files/(\d+)/serve', self.path)
+        if extra and int(extra[1]) in EXTRA_EBOOKS: return self.send_file(EXTRA_EBOOKS[int(extra[1])], 'application/octet-stream')
+        if self.path == "/api/v1/books/files/106/serve": return self.send_bytes(FB2,"application/x-fictionbook+xml")
         if self.path == "/api/v1/books/files/102/serve": return self.send_bytes(PDF,"application/pdf")
         if self.path == "/api/v1/books/files/103/serve": return self.send_bytes(CBZ,"application/zip")
         if self.path == "/api/v1/books/files/101/serve":
@@ -481,12 +561,24 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1", help="Bind address. Use a trusted LAN interface only for emulator access.")
     parser.add_argument("--port", type=int, default=4890)
     parser.add_argument("--catalog-size", type=int, default=0, help="Additional synthetic books per format for scrolling tests")
+    parser.add_argument("--upload-delay-seconds", type=float, default=0, help="Delay each synthetic chunk response to test pause/resume (0 to 5 seconds)")
     parser.add_argument("--oidc", action="store_true", help="Enable a synthetic browser-based OIDC flow for client tests")
     parser.add_argument("--requests-count", type=int, default=0, help="Seed synthetic personal requests for paging tests")
+    parser.add_argument("--ebook-file", type=pathlib.Path, action="append", default=[], help="Additional local DRM-free ebook fixture outside the repository (up to three)")
     parser.add_argument("--book-dir", type=pathlib.Path, help="Private fixture directory with manifest.json, cover.jpg, and <fileId>.<format> audio files")
     args = parser.parse_args()
     if not 0 <= args.catalog_size <= 10000: parser.error("catalog-size must be between 0 and 10000")
     if not 0 <= args.requests_count <= 10000: parser.error("requests-count must be between 0 and 10000")
+    if len(args.ebook_file) > 3: parser.error("At most three extra ebook fixtures are supported")
+    for index, source in enumerate(args.ebook_file):
+        source = source.resolve()
+        format = source.suffix.lower().lstrip('.')
+        if format not in ['epub','kepub','pdf','fb2','mobi','cbz'] or not source.is_file() or not 0 < source.stat().st_size <= 512 * 1024 * 1024: parser.error("Choose a supported ebook fixture below 512 MB")
+        book_id, file_id = 8 + index, 107 + index
+        EXTRA_EBOOKS[file_id] = source
+        DOCUMENTS[book_id] = {'id':book_id,'title':source.stem,'authors':[{'name':'Local verification fixture'}],'files':[{'id':file_id,'format':format,'filename':source.name,'sizeBytes':source.stat().st_size,'fileHash':f'local-{source.stat().st_size}-{source.stat().st_mtime_ns}'}]}
+    if not 0 <= args.upload_delay_seconds <= 5: parser.error("upload-delay-seconds must be between 0 and 5")
+    UPLOAD_DELAY_SECONDS = args.upload_delay_seconds
     OIDC_FIXTURE = args.oidc
     for i in range(args.requests_count):
         BOOK_REQUESTS[i+1] = {'id': i+1, 'userId': 1, 'title': f'Synthetic request {i+1:03}', 'authors': ['Orbit Test Reader'], 'mediaKind': 'ebook' if i % 2 else 'audiobook', 'status': 'pending' if i % 3 else 'available', 'note': None, 'decisionNote': None, 'statusReason': None}

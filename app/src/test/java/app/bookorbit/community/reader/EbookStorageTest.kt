@@ -159,13 +159,16 @@ class EbookStorageTest {
     }
 
     @Test
-    fun `EPUB and KEPUB files are supported while other formats wait`() {
+    fun `supported readers include FB2 and MOBI but exclude AZW3 and DJVU`() {
         assertTrue(file.supported)
         assertTrue(file.copy(format = "KEPUB").supported)
         assertTrue(file.copy(format = "pdf").supported)
         assertTrue(file.copy(format = "cbz").supported)
         assertTrue(file.copy(format = "cbr").supported)
         assertTrue(file.copy(format = "cb7").supported)
-        assertFalse(file.copy(format = "mobi").supported)
+        assertTrue(file.copy(format = "mobi").supported)
+        assertTrue(file.copy(format = "fb2").supported)
+        assertFalse(file.copy(format = "azw3").supported)
+        assertFalse(file.copy(format = "djvu").supported)
     }
 }

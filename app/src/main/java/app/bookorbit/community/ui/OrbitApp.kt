@@ -45,7 +45,13 @@ import coil.request.ImageRequest
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaController?) {
+fun OrbitApp(
+    model: LibraryViewModel,
+    app: OrbitApplication,
+    controller: MediaController?,
+    widgetTab: Int? = null,
+    consumeWidget: () -> Unit = {},
+) {
     val state by model.state.collectAsStateWithLifecycle()
     val catalog = model.catalog.collectAsLazyPagingItems()
     val work by
@@ -68,8 +74,10 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
     var showActivity by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
     var showNotebook by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
     var showRequests by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
-    BackHandler(showLibrary || showActivity || showNotebook || showRequests) {
-        if (showRequests) showRequests = false
+    var showUploads by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
+    BackHandler(showLibrary || showActivity || showNotebook || showRequests || showUploads) {
+        if (showUploads) showUploads = false
+        else if (showRequests) showRequests = false
         else if (showNotebook) showNotebook = false
         else if (showActivity) showActivity = false
         else {
@@ -77,7 +85,7 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
             showDashboard = true
         }
     }
-    var showEbooks by rememberSaveable { mutableStateOf(false) }
+    var showEbooks by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
     var signOut by remember { mutableStateOf(false) }
     val notificationPermission =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -90,7 +98,6 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
         showPlayer = false
         showAppearance = false
         showServers = false
-        showEbooks = false
         pendingEbook = null
     }
     val selectedTab =
@@ -101,9 +108,16 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
         showActivity = false
         showNotebook = false
         showRequests = false
+        showUploads = false
         showDashboard = tab == 0
         showEbooks = tab == 2
         if (tab == 1 || tab == 3) model.setOffline(tab == 3)
+    }
+    LaunchedEffect(widgetTab, state.session?.scope) {
+        if (widgetTab != null && state.session != null) {
+            selectTab(widgetTab)
+            consumeWidget()
+        }
     }
     val rail =
         useNavigationRail(androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp)
@@ -136,6 +150,7 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                     options = state.loginOptions,
                     optionsAddress = state.optionsAddress,
                     onOptions = model::loadLoginOptions,
+                    onMagic = { address, token -> model.magicLogin(address, token, controller) },
                     onProvider = { address, provider ->
                         model.startOidc(address, provider, controller)
                     },
@@ -150,7 +165,8 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                                 !showLibrary &&
                                 !showActivity &&
                                 !showNotebook &&
-                                !showRequests
+                                !showRequests &&
+                                !showUploads
                         )
                             TopAppBar(
                                 colors =
@@ -205,7 +221,8 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                 ) { padding ->
                     Crossfade(
                         targetState =
-                            if (showRequests) "requests"
+                            if (showUploads) "uploads"
+                            else if (showRequests) "requests"
                             else if (showNotebook) "notebook"
                             else if (showActivity) "activity"
                             else if (showLibrary) "library"
@@ -213,7 +230,11 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                         animationSpec = tween(160),
                         label = "Screen transition",
                     ) { screen ->
-                        if (screen == "requests")
+                        if (screen == "uploads")
+                            UploadsScreen(app, state.session!!, Modifier.padding(padding)) {
+                                showUploads = false
+                            }
+                        else if (screen == "requests")
                             BookRequestsScreen(state.session!!, Modifier.padding(padding)) {
                                 showRequests = false
                             }
@@ -254,6 +275,7 @@ fun OrbitApp(model: LibraryViewModel, app: OrbitApplication, controller: MediaCo
                                 onServers = { showServers = true },
                                 onNotebook = { showNotebook = true },
                                 onRequests = { showRequests = true },
+                                onUploads = { showUploads = true },
                                 onLibrary = {
                                     showDashboard = false
                                     showLibrary = true
@@ -410,6 +432,7 @@ private fun SignIn(
     error: String?,
     login: (String, String, String) -> Unit,
     onCancel: (() -> Unit)? = null,
+    onMagic: (String, String) -> Unit = { _, _ -> },
     options: LoginOptions? = null,
     optionsAddress: String? = null,
     onOptions: (String) -> Unit = {},
@@ -418,6 +441,8 @@ private fun SignIn(
     var server by rememberSaveable { mutableStateOf("") }
     var username by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var magic by remember { mutableStateOf(false) }
+    var magicValue by remember { mutableStateOf("") }
     val currentOptions = options.takeIf { optionsAddress == server.trim() }
     BackHandler(onCancel != null && !busy) { onCancel?.invoke() }
     Column(
@@ -470,6 +495,9 @@ private fun SignIn(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Load sign-in options")
+            }
+            TextButton(onClick = { magic = true }, enabled = !busy && server.isNotBlank()) {
+                Text("Use a magic link")
             }
             currentOptions
                 ?.oidcProviders
@@ -531,6 +559,47 @@ private fun SignIn(
             )
         }
     }
+    if (magic)
+        AlertDialog(
+            onDismissRequest = {
+                magic = false
+                magicValue = ""
+            },
+            title = { Text("Magic-link sign-in") },
+            text = {
+                OutlinedTextField(
+                    magicValue,
+                    { magicValue = it.take(4096) },
+                    label = { Text("Magic link or token") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = magicValue.isNotBlank(),
+                    onClick = {
+                        val value = magicValue
+                        magicValue = ""
+                        magic = false
+                        onMagic(server, value)
+                    },
+                ) {
+                    Text("Sign in")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        magicValue = ""
+                        magic = false
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            },
+        )
 }
 
 @Composable

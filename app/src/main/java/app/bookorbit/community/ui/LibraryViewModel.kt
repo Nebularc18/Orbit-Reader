@@ -141,6 +141,34 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun magicLogin(
+        server: String,
+        token: String,
+        controller: androidx.media3.session.MediaController?,
+    ) {
+        if (mutable.value.busy) return
+        viewModelScope.launch {
+            mutable.update { it.copy(busy = true, error = null) }
+            try {
+                pauseForConnection(controller)
+                app.oidcStore.clear()
+                val session = withContext(Dispatchers.IO) { app.api.loginMagic(server, token) }
+                mutable.value = initialState(session)
+                browse()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                mutable.update {
+                    it.copy(
+                        busy = false,
+                        error =
+                            "Could not sign in. Check that the magic link belongs to this server and is still active.",
+                    )
+                }
+            }
+        }
+    }
+
     fun loadLoginOptions(address: String) {
         if (mutable.value.busy) return
         viewModelScope.launch {

@@ -20,7 +20,7 @@ class ReaderInteractionTest {
     fun `direct opening respects the chosen edition and falls back to a supported format`() {
         val pdf = EbookFile(101, "pdf", "Book.pdf")
         val epub = EbookFile(102, "epub", "Book.epub")
-        val unsupported = EbookFile(103, "mobi", "Book.mobi")
+        val unsupported = EbookFile(103, "azw3", "Book.azw3")
         assertEquals(epub, preferredReadingFile(listOf(pdf, epub, unsupported), null))
         assertEquals(pdf, preferredReadingFile(listOf(pdf, epub), 101))
         assertEquals(epub, preferredReadingFile(listOf(pdf, epub, unsupported), 103))

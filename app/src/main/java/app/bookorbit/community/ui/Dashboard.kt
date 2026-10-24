@@ -45,6 +45,7 @@ fun Dashboard(
     onServers: () -> Unit = {},
     onNotebook: () -> Unit = {},
     onRequests: () -> Unit = {},
+    onUploads: () -> Unit = {},
 ) {
     val model: DashboardViewModel = viewModel(key = "dashboard-${account.scope}")
     val state by model.state.collectAsStateWithLifecycle()
@@ -250,6 +251,14 @@ fun Dashboard(
                 Icon(Icons.Rounded.Add, null, Modifier.size(17.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("Book requests")
+            }
+        }
+        item(key = "uploads-shortcut") {
+            OutlinedButton(
+                onClick = onUploads,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            ) {
+                Text("Upload a book")
             }
         }
         if (state.goal != null || state.streak != null)

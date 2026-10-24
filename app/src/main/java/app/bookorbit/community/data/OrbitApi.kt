@@ -4,6 +4,7 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
+import okhttp3.Cookie
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
@@ -76,17 +77,19 @@ class OrbitApi(val sessions: SessionStore) {
                             if (current.accessToken != session.accessToken) current
                             else {
                                 val tokens: Tokens =
-                                    decode(
-                                        raw(
-                                            session.server,
-                                            "auth/refresh",
-                                            "POST",
-                                            buildJsonObject {
-                                                    put("refreshToken", current.refreshToken)
-                                                }
-                                                .toString(),
+                                    if (current.cookieRefresh) refreshMagic(current)
+                                    else
+                                        decode(
+                                            raw(
+                                                session.server,
+                                                "auth/refresh",
+                                                "POST",
+                                                buildJsonObject {
+                                                        put("refreshToken", current.refreshToken)
+                                                    }
+                                                    .toString(),
+                                            )
                                         )
-                                    )
                                 current
                                     .copy(
                                         accessToken = tokens.accessToken,
@@ -125,6 +128,68 @@ class OrbitApi(val sessions: SessionStore) {
                 )
             Session(server, credentials.accessToken, credentials.refreshToken, credentials.user)
                 .also(sessions::save)
+        }
+
+    fun loginMagic(address: String, value: String): Session =
+        synchronized(refreshLock) {
+            val server = normalizeServer(address)
+            val token = magicLinkToken(server, value)
+            raw(
+                    server,
+                    "auth/magic-links/login",
+                    "POST",
+                    buildJsonObject { put("token", token) }.toString(),
+                )
+                .use { response ->
+                    val credentials =
+                        wireJson.decodeFromString<MagicCredentials>(response.body!!.string())
+                    Session(
+                            server,
+                            credentials.accessToken,
+                            refreshCookie(response, server),
+                            credentials.user,
+                            cookieRefresh = true,
+                        )
+                        .also(sessions::save)
+                }
+        }
+
+    private fun refreshCookie(response: Response, server: String): String {
+        val target = "$server/api/v1/auth/refresh".toHttpUrl()
+        return Cookie.parseAll(response.request.url, response.headers)
+            .singleOrNull {
+                it.name == "refresh_token" &&
+                    it.matches(target) &&
+                    it.expiresAt > System.currentTimeMillis()
+            }
+            ?.value
+            ?.takeIf { it.matches(Regex("[a-fA-F0-9]{64}")) }
+            ?: throw IOException("The server did not provide a usable sign-in session.")
+    }
+
+    private fun cookieAuth(session: Session, path: String): Response {
+        val base = session.server.toHttpUrl()
+        require(session.refreshToken.matches(Regex("[a-fA-F0-9]{64}")))
+        return checked(
+            transport
+                .newCall(
+                    buildRequest("${session.server}/api/v1/$path", "POST", "{}")
+                        .newBuilder()
+                        .header("Cookie", "refresh_token=${session.refreshToken}")
+                        .header(
+                            "Origin",
+                            base.newBuilder().encodedPath("/").build().toString().trimEnd('/'),
+                        )
+                        .build()
+                )
+                .execute()
+        )
+    }
+
+    private fun refreshMagic(session: Session): Tokens =
+        cookieAuth(session, "auth/refresh").use { response ->
+            val access = wireJson.decodeFromString<MagicAccess>(response.body!!.string())
+            Tokens(access.accessToken, refreshCookie(response, session.server))
         }
 
     fun loginOptions(address: String): LoginOptions =
@@ -168,6 +233,77 @@ class OrbitApi(val sessions: SessionStore) {
                 )
                 .also(sessions::save)
         }
+
+    fun uploadCapabilities(owner: String): UploadCapabilities =
+        decode(request("uploads/capabilities", expectedScope = owner))
+
+    fun createUpload(value: UploadCreate, owner: String): UploadSession {
+        require(
+            value.filename.isNotBlank() &&
+                value.filename.length <= 500 &&
+                value.sizeBytes > 0 &&
+                value.target.libraryId > 0 &&
+                (value.target.folderId == null || value.target.folderId > 0)
+        )
+        java.util.UUID.fromString(value.idempotencyKey)
+        require(value.target.kind == "library")
+        val body = buildJsonObject {
+            put("filename", value.filename)
+            put("sizeBytes", value.sizeBytes)
+            put("idempotencyKey", value.idempotencyKey)
+            put(
+                "target",
+                buildJsonObject {
+                    put("kind", "library")
+                    put("libraryId", value.target.libraryId)
+                    value.target.folderId?.let { put("folderId", it) }
+                },
+            )
+        }
+        return decode(request("uploads", "POST", body.toString(), owner, client = submissionClient))
+    }
+
+    fun uploadSession(id: String, owner: String): UploadSession {
+        java.util.UUID.fromString(id)
+        return decode(request("uploads/$id", expectedScope = owner))
+    }
+
+    fun uploadChunk(id: String, offset: Long, bytes: ByteArray, owner: String): UploadSession {
+        java.util.UUID.fromString(id)
+        require(offset >= 0 && bytes.isNotEmpty() && bytes.size <= 4 * 1024 * 1024)
+        val body =
+            okhttp3.MultipartBody.Builder()
+                .setType(okhttp3.MultipartBody.FORM)
+                .addFormDataPart(
+                    "file",
+                    "chunk",
+                    bytes.toRequestBody("application/octet-stream".toMediaType()),
+                )
+                .build()
+        val request =
+            Request.Builder()
+                .url(url("uploads/$id/chunks"))
+                .post(body)
+                .header("Upload-Offset", offset.toString())
+                .header(
+                    "Upload-Checksum",
+                    java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(
+                        ""
+                    ) {
+                        "%02x".format(it)
+                    },
+                )
+                .tag(String::class.java, owner)
+                .build()
+        return decode(checked(submissionClient.newCall(request).execute()))
+    }
+
+    fun finishUpload(id: String, owner: String): UploadSession {
+        java.util.UUID.fromString(id)
+        return decode(
+            request("uploads/$id/complete", "POST", "{}", owner, client = submissionClient)
+        )
+    }
 
     fun bookRequests(page: Int, status: String?, media: String?, owner: String): BookRequestPage {
         require(
@@ -215,13 +351,15 @@ class OrbitApi(val sessions: SessionStore) {
         synchronized(refreshLock) {
             val session = sessions.read() ?: return@synchronized
             try {
-                raw(
-                        session.server,
-                        "auth/logout",
-                        "POST",
-                        buildJsonObject { put("refreshToken", session.refreshToken) }.toString(),
-                    )
-                    .close()
+                if (session.cookieRefresh) cookieAuth(session, "auth/logout").close()
+                else
+                    raw(
+                            session.server,
+                            "auth/logout",
+                            "POST",
+                            buildJsonObject { put("refreshToken", session.refreshToken) }.toString(),
+                        )
+                        .close()
             } finally {
                 sessions.save(null)
             }
@@ -437,6 +575,8 @@ class OrbitApi(val sessions: SessionStore) {
                                                                     "cbz",
                                                                     "cbr",
                                                                     "cb7",
+                                                                    "fb2",
+                                                                    "mobi",
                                                                 )
                                                             else
                                                                 listOf(
@@ -516,6 +656,23 @@ class OrbitApi(val sessions: SessionStore) {
 
     fun ebookDetail(bookId: Int, expectedScope: String): EbookDetail =
         decode(request("books/$bookId", expectedScope = expectedScope))
+
+    fun bookMetadata(id: Int, owner: String): JsonObject =
+        decode(request("books/$id", expectedScope = owner))
+
+    fun saveBookMetadata(
+        id: Int,
+        owner: String,
+        source: JsonObject,
+        fields: List<MetadataField>,
+        drafts: Map<String, String>,
+    ) {
+        require(fields == metadataFields + customMetadataFields(source))
+        val patch = metadataPatch(source, fields, drafts)
+        require(patch.isNotEmpty())
+        request("books/$id/metadata", "PATCH", patch.toString(), owner, client = submissionClient)
+            .close()
+    }
 
     fun ebookContent(fileId: Int, expectedScope: String): Response =
         request(

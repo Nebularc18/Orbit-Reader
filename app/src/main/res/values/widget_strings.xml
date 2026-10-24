@@ -1,0 +1,8 @@
+<resources>
+    <string name="widget_title">Orbit Reader</string>
+    <string name="widget_home">Home</string>
+    <string name="widget_listen">Listen</string>
+    <string name="widget_read">Read</string>
+    <string name="widget_downloads">Downloads</string>
+    <string name="widget_description">Open your library, audiobooks, ebooks, or downloads.</string>
+</resources>

@@ -113,7 +113,7 @@ class EbookStorage(context: Context, scope: String) {
     fun content(file: EbookFile) =
         File(
             dir(file.id),
-            "${version(file)}.${if (file.format?.lowercase() == "pdf") "pdf" else if (file.format?.lowercase() in listOf("cbz", "cbr", "cb7")) "cbz" else "epub"}",
+            "${version(file)}.${if (file.format?.lowercase() in listOf("pdf", "fb2", "mobi")) file.format!!.lowercase() else if (file.format?.lowercase() in listOf("cbz", "cbr", "cb7")) "cbz" else "epub"}",
         )
 
     fun ready(file: EbookFile): Boolean = content(file).isFile && content(file).length() > 0
@@ -242,7 +242,9 @@ class EbookStorage(context: Context, scope: String) {
                 .listFiles()
                 .orEmpty()
                 .filter {
-                    it.name.endsWith(".epub") ||
+                    it.name.endsWith(".fb2") ||
+                        it.name.endsWith(".mobi") ||
+                        it.name.endsWith(".epub") ||
                         it.name.endsWith(".pdf") ||
                         it.name.endsWith(".cbz") ||
                         it.name.endsWith(".part")

@@ -185,7 +185,9 @@ class EbookDownloadWorker(context: Context, params: WorkerParameters) :
                     )
                         throw IOException("Incomplete ebook")
                 }
-                if (book.file.format?.lowercase() == "pdf") {
+                if (book.file.format?.lowercase() in listOf("fb2", "mobi")) {
+                    require(partial.length() > 0)
+                } else if (book.file.format?.lowercase() == "pdf") {
                     partial.inputStream().use {
                         require(
                             ByteArray(5)

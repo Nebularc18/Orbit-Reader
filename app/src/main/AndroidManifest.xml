@@ -18,6 +18,10 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="true">
+        <receiver android:name=".widget.LibraryWidget" android:exported="false" android:label="@string/widget_title">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/library_widget" />
+        </receiver>
         <activity android:name=".reader.PageReaderActivity" android:exported="false" />
         <activity android:name=".reader.EpubReaderActivity" android:exported="false" />
         <activity android:name=".OidcCallbackActivity" android:exported="true">

@@ -77,6 +77,20 @@ class EpubCfiTest {
     }
 
     @Test
+    fun `side bias preserves source boundaries for point and range CFIs`() {
+        assertEquals(
+            CfiLocation("/6/2", "/4/2/1:3"),
+            EpubCfiSyntax.parse("epubcfi(/6/2!/4/2/1:3;s=b)"),
+        )
+        assertEquals(
+            CfiLocation("/6/2", "/4/2/1:3", "/4/2/1:8"),
+            EpubCfiSyntax.parse("epubcfi(/6/2!/4/2,/1:3;s=a,/1:8;s=b)"),
+        )
+        assertNull(EpubCfiSyntax.parse("epubcfi(/6/2!/4/2/1:3;s=x)"))
+        assertNull(EpubCfiSyntax.parse("epubcfi(/6/2!/4/2/1:3;s=b;foo=1)"))
+    }
+
+    @Test
     fun `assertions escaped delimiters and unsupported positions are bounded`() {
         assertEquals(
             CfiLocation("/6/2", "/4/2/1:3"),

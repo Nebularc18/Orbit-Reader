@@ -16,15 +16,23 @@ import app.bookorbit.community.ui.LibraryViewModel
 import app.bookorbit.community.ui.OrbitApp
 
 class MainActivity : ComponentActivity() {
+    private var widgetTab by mutableStateOf<Int?>(null)
     private val library: LibraryViewModel by viewModels()
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        acceptWidget(intent)
         if (intent.action == "app.bookorbit.community.OIDC_COMPLETE") library.acceptSavedSession()
+    }
+
+    private fun acceptWidget(intent: Intent) {
+        if (intent.action == app.bookorbit.community.widget.LibraryWidget.ACTION)
+            widgetTab = intent.getIntExtra("tab", 0).takeIf { it in 0..3 }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        acceptWidget(intent)
         enableEdgeToEdge()
         setContent {
             var controller by remember { mutableStateOf<MediaController?>(null) }
@@ -47,7 +55,9 @@ class MainActivity : ComponentActivity() {
                 )
                 onDispose { MediaController.releaseFuture(future) }
             }
-            OrbitApp(library, application as OrbitApplication, controller)
+            OrbitApp(library, application as OrbitApplication, controller, widgetTab) {
+                widgetTab = null
+            }
         }
     }
 }

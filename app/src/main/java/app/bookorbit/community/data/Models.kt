@@ -24,6 +24,7 @@ data class Session(
     val accessToken: String,
     val refreshToken: String,
     val user: Account,
+    val cookieRefresh: Boolean = false,
 ) {
     val scope: String
         get() =
@@ -152,7 +153,9 @@ data class EbookFile(
     val createdAt: String = "",
 ) {
     val supported: Boolean
-        get() = format?.lowercase() in listOf("epub", "kepub", "pdf", "cbz", "cbr", "cb7")
+        get() =
+            format?.lowercase() in
+                listOf("epub", "kepub", "pdf", "cbz", "cbr", "cb7", "fb2", "mobi")
 
     val revision: String
         get() = fileHash ?: contentVersion ?: "$id-$sizeBytes-$createdAt"
@@ -334,3 +337,52 @@ data class NewBookRequest(
         return copy(title = title.trim(), authors = authors.map(String::trim), note = note.trim())
     }
 }
+
+@Serializable data class MagicCredentials(val accessToken: String, val user: Account)
+
+@Serializable data class MagicAccess(val accessToken: String)
+
+@Serializable data class UploadFolder(val id: Int, val name: String)
+
+@Serializable
+data class UploadLibrary(
+    val id: Int,
+    val name: String,
+    val allowedFormats: List<String> = emptyList(),
+    val folders: List<UploadFolder> = emptyList(),
+)
+
+@Serializable
+data class UploadCapabilities(
+    val maxFileSizeBytes: Long,
+    val chunkSizeBytes: Int,
+    val supportedFormats: List<String>,
+    val canUploadToLibrary: Boolean,
+    val libraries: List<UploadLibrary> = emptyList(),
+)
+
+@Serializable
+data class UploadTarget(
+    val kind: String = "library",
+    val libraryId: Int,
+    val folderId: Int? = null,
+)
+
+@Serializable
+data class UploadCreate(
+    val filename: String,
+    val sizeBytes: Long,
+    val idempotencyKey: String,
+    val target: UploadTarget,
+)
+
+@Serializable
+data class UploadSession(
+    val id: String,
+    val filename: String,
+    val sizeBytes: Long,
+    val receivedBytes: Long,
+    val chunkSizeBytes: Int,
+    val status: String,
+    val bookId: Int? = null,
+)
