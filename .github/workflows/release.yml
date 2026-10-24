@@ -115,14 +115,79 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          options=()
-          if [[ "$RELEASE_TAG" == *-* ]]; then
-            options+=(--prerelease)
-          fi
-          gh release create "$RELEASE_TAG" dist/*.apk dist/SHA256SUMS \
-            --verify-tag --draft --title "Orbit Reader $RELEASE_TAG" \
-            --generate-notes "${options[@]}"
-          gh release edit "$RELEASE_TAG" --draft=false
+          python3 - <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          def api(endpoint, *args):
+              output = subprocess.check_output(['gh', 'api', endpoint, *args], text=True)
+              return json.loads(output) if output.strip() else None
+
+          repo = os.environ['GH_REPO']
+          tag = os.environ['RELEASE_TAG']
+          files = [Path('dist') / f'orbit-reader-{tag}.apk', Path('dist/SHA256SUMS')]
+          for path in files:
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(f'Missing or empty release asset: {path}')
+
+          pages = api(f'repos/{repo}/releases?per_page=100', '--paginate', '--slurp')
+          matches = [release for page in pages for release in page if release['tag_name'] == tag]
+          # Prefer the public release when an abandoned draft has the same tag.
+          candidates = [release for release in matches if not release['draft']] or matches
+          if len(candidates) > 1:
+              raise SystemExit(f'Multiple releases match {tag}; resolve duplicates before retrying.')
+          if candidates:
+              release = candidates[0]
+          else:
+              release = api(
+                  f'repos/{repo}/releases', '--method', 'POST',
+                  '-f', f'tag_name={tag}', '-f', f'name=Orbit Reader {tag}',
+                  '-F', 'draft=true', '-F', 'generate_release_notes=true',
+                  '-F', f'prerelease={str("-" in tag).lower()}',
+              )
+
+          release_id = release['id']
+          expected = {}
+          for path in files:
+              with path.open('rb') as source:
+                  digest = 'sha256:' + hashlib.file_digest(source, 'sha256').hexdigest()
+              expected[path.name] = (path.stat().st_size, digest)
+              asset = next((item for item in release['assets'] if item['name'] == path.name), None)
+              if asset:
+                  if (asset['state'] == 'uploaded' and asset['size'] == path.stat().st_size
+                          and asset.get('digest') == digest):
+                      continue
+                  if not release['draft']:
+                      raise SystemExit(f'Refusing to replace published asset: {path.name}')
+                  api(f'repos/{repo}/releases/assets/{asset["id"]}', '--method', 'DELETE')
+              api(
+                  f'https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={path.name}',
+                  '--method', 'POST', '-H', 'Content-Type: application/octet-stream',
+                  '--input', str(path),
+              )
+
+          def verify_assets(current):
+              assets = {asset['name']: asset for asset in current['assets']}
+              for name, (size, digest) in expected.items():
+                  asset = assets.get(name, {})
+                  if (asset.get('state') != 'uploaded' or asset.get('size') != size
+                          or asset.get('digest') != digest):
+                      raise SystemExit(f'Release asset verification failed: {name}')
+
+          endpoint = f'repos/{repo}/releases/{release_id}'
+          verify_assets(api(endpoint))
+          if release['draft']:
+              api(endpoint, '--method', 'PATCH', '-F', 'draft=false')
+          published = api(endpoint)
+          verify_assets(published)
+          if published['draft']:
+              raise SystemExit('Release is still a draft.')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f'APK and checksum published: {published["html_url"]}\n')
+          PYTHON
 
       - name: Remove signing material
         if: always()
