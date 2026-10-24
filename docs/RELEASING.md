@@ -61,11 +61,18 @@ retry failed runs before publishing a newer version. Keep this workflow's run
 counter when maintaining release automation. Local builds default to version
 `0.0.0-dev` and code `1`.
 
-Publishing starts with a draft so a failed upload cannot expose a release with
-missing assets. If publishing fails after creating the draft, delete that draft
-before rerunning the workflow for the same tag. Keep the tag. Existing releases
-are never overwritten. Manual runs require the workflow on the default branch;
-choose the default branch in Actions and enter the existing release tag.
+Publishing reuses the release for the tag, preferring a published release over an
+abandoned draft with the same tag. If no release exists, the workflow creates a
+draft. Uploads and publication use that release's ID so the APK cannot land on a
+different release. Both the APK and checksum must pass size and SHA-256 checks
+before publication, and the workflow checks them again afterward.
+
+Retry failed runs with the same tag. Draft assets can be replaced on retry;
+published assets are preserved and must match the build to be reused. Missing
+assets are uploaded to the selected release. A conflicting published asset fails
+the run rather than changing an existing download. The workflow summary links to
+the release after verification. Manual runs require the workflow on the default
+branch; choose the default branch in Actions and enter the existing release tag.
 
 ## Install and update
 
