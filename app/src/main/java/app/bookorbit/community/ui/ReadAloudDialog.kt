@@ -10,6 +10,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.bookorbit.community.reader.ReadAloudController
@@ -54,8 +55,13 @@ fun ReadAloudDialog(controller: ReadAloudController, onClose: () -> Unit) {
                 var draftSpeed by remember(state.speed) { mutableFloatStateOf(state.speed) }
                 Text("Speed: ${draftSpeed}×")
                 Slider(
-                    draftSpeed,
-                    { draftSpeed = it },
+                    modifier =
+                        Modifier.semantics {
+                            contentDescription = "Read aloud speed"
+                            stateDescription = "${draftSpeed} times"
+                        },
+                    value = draftSpeed,
+                    onValueChange = { draftSpeed = it },
                     onValueChangeFinished = { controller.speed(draftSpeed) },
                     valueRange = .5f..2f,
                     steps = 5,

@@ -197,7 +197,7 @@ class EbookLibraryViewModel(application: Application) : AndroidViewModel(applica
                         it.copy(
                             busy = false,
                             error =
-                                "Could not open this book. EPUB, KEPUB, PDF, CBZ, CBR, and CB7 files are supported.",
+                                "Could not open this book. EPUB, KEPUB, PDF, FB2, MOBI, CBZ, CBR, and CB7 files are supported.",
                         )
                     }
                 }
@@ -281,7 +281,8 @@ fun preferredReadingFile(files: List<EbookFile>, preferredId: Int?): EbookFile? 
     val supported = files.filter { it.supported }
     return supported.firstOrNull { it.id == preferredId }
         ?: supported.minByOrNull {
-            listOf("epub", "kepub", "pdf", "cbz", "cbr", "cb7").indexOf(it.format?.lowercase())
+            listOf("epub", "kepub", "pdf", "cbz", "cbr", "cb7", "fb2", "mobi")
+                .indexOf(it.format?.lowercase())
         }
 }
 

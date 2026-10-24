@@ -624,7 +624,7 @@ class OrbitApiTest {
         val body = wireJson.parseToJsonElement(request.body.readUtf8()).jsonObject
         val rule = body["filter"]!!.jsonObject["rules"]!!.jsonArray.single().jsonObject
         assertEquals(
-            listOf("epub", "kepub", "pdf", "cbz", "cbr", "cb7"),
+            listOf("epub", "kepub", "pdf", "cbz", "cbr", "cb7", "fb2", "mobi"),
             rule["value"]!!.jsonArray.map { it.jsonPrimitive.content },
         )
         assertEquals(0, body["pagination"]!!.jsonObject["page"]!!.jsonPrimitive.int)
@@ -729,6 +729,140 @@ class OrbitApiTest {
             api.createAnnotation(2, owner, AnnotationCreate(101, "Missing location"))
         }
         assertEquals(4, server.requestCount)
+    }
+
+    @Test
+    fun `magic login captures cookie rotation without leaking it into resource requests`() {
+        server.enqueue(
+            MockResponse()
+                .addHeader(
+                    "Set-Cookie",
+                    "refresh_token=${"a".repeat(64)}; HttpOnly; Path=/books/api/v1/auth",
+                )
+                .setBody("""{"accessToken":"magic-access","user":{"id":7,"username":"reader"}}""")
+        )
+        val session =
+            api.loginMagic(store.read()!!.server, "${store.read()!!.server}/magic?token=one-time")
+        assertTrue(session.cookieRefresh)
+        assertEquals("a".repeat(64), session.refreshToken)
+        server.takeRequest().let {
+            assertEquals("/books/api/v1/auth/magic-links/login", it.path)
+            assertEquals("""{"token":"one-time"}""", it.body.readUtf8())
+            assertNull(it.getHeader("Authorization"))
+            assertNull(it.getHeader("Cookie"))
+        }
+        server.enqueue(MockResponse().setResponseCode(401))
+        server.enqueue(
+            MockResponse()
+                .addHeader(
+                    "Set-Cookie",
+                    "refresh_token=${"b".repeat(64)}; HttpOnly; Path=/books/api/v1/auth",
+                )
+                .setBody("""{"accessToken":"rotated"}""")
+        )
+        server.enqueue(
+            MockResponse().setBody("""{"id":7,"title":"Book","authors":[],"files":[]}""")
+        )
+        api.ebookDetail(7, session.scope)
+        assertNull(server.takeRequest().getHeader("Cookie"))
+        server.takeRequest().let {
+            assertEquals("/books/api/v1/auth/refresh", it.path)
+            assertEquals("{}", it.body.readUtf8())
+            assertEquals("refresh_token=${"a".repeat(64)}", it.getHeader("Cookie"))
+            assertNotNull(it.getHeader("Origin"))
+            assertNull(it.getHeader("Authorization"))
+        }
+        server.takeRequest().let {
+            assertEquals("Bearer rotated", it.getHeader("Authorization"))
+            assertNull(it.getHeader("Cookie"))
+        }
+        assertEquals("b".repeat(64), store.read()!!.refreshToken)
+        server.enqueue(MockResponse().setBody("{}"))
+        api.logout()
+        server.takeRequest().let {
+            assertEquals("/books/api/v1/auth/logout", it.path)
+            assertEquals("refresh_token=${"b".repeat(64)}", it.getHeader("Cookie"))
+            assertEquals("{}", it.body.readUtf8())
+        }
+    }
+
+    @Test
+    fun `magic links reject foreign origins duplicated tokens and unusable cookies`() {
+        val base = store.read()!!.server
+        for (input in
+            listOf(
+                "https://elsewhere.test/magic?token=secret",
+                "$base/magic?token=a&token=b",
+                "$base/magic?token=a#fragment",
+                "$base/magic?token=a&extra=b",
+                "bad token",
+            )) assertThrows(Exception::class.java) { magicLinkToken(base, input) }
+        assertEquals("raw-token", magicLinkToken(base, "raw-token"))
+        server.enqueue(
+            MockResponse()
+                .addHeader("Set-Cookie", "refresh_token=${"a".repeat(64)}; Path=/wrong")
+                .setBody("""{"accessToken":"bad","user":{"id":7,"username":"reader"}}""")
+        )
+        assertThrows(java.io.IOException::class.java) { api.loginMagic(base, "raw-token") }
+        assertEquals("old-access", store.read()!!.accessToken)
+    }
+
+    @Test
+    fun `resumable uploads send idempotency target offset checksum and bounded chunks`() {
+        val owner = store.read()!!.scope
+        val id = "01234567-89ab-4cde-8fab-0123456789ab"
+        val reply =
+            """{"id":"$id","filename":"book.epub","sizeBytes":4,"receivedBytes":4,"chunkSizeBytes":65536,"status":"receiving"}"""
+        server.enqueue(MockResponse().setBody(reply))
+        api.createUpload(
+            UploadCreate("book.epub", 4, id, UploadTarget(libraryId = 1, folderId = 2)),
+            owner,
+        )
+        server.takeRequest().let {
+            val body = wireJson.parseToJsonElement(it.body.readUtf8()).jsonObject
+            assertEquals(setOf("filename", "sizeBytes", "idempotencyKey", "target"), body.keys)
+            assertEquals(JsonPrimitive("library"), body.getValue("target").jsonObject["kind"])
+        }
+        server.enqueue(MockResponse().setBody(reply))
+        api.uploadChunk(id, 0, byteArrayOf(1, 2, 3, 4), owner)
+        server.takeRequest().let {
+            assertEquals("0", it.getHeader("Upload-Offset"))
+            assertEquals(
+                "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a",
+                it.getHeader("Upload-Checksum"),
+            )
+            assertTrue(it.getHeader("Content-Type")!!.startsWith("multipart/form-data"))
+            assertTrue(it.body.readUtf8().contains("name=\"file\""))
+        }
+        server.enqueue(MockResponse().setBody(reply))
+        api.finishUpload(id, owner)
+        assertEquals("{}", server.takeRequest().body.readUtf8())
+        assertThrows(IllegalArgumentException::class.java) {
+            api.uploadChunk(id, 0, ByteArray(4194305), owner)
+        }
+        assertThrows(ApiFailure::class.java) { api.uploadSession(id, "other-account") }
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test
+    fun `metadata saves send only changed DTO fields`() {
+        val source =
+            wireJson
+                .parseToJsonElement("""{"title":"Old","providerIds":{"google":"id"}}""")
+                .jsonObject
+        server.enqueue(MockResponse().setBody("{}"))
+        api.saveBookMetadata(
+            7,
+            store.read()!!.scope,
+            source,
+            metadataFields,
+            mapOf("title" to "New"),
+        )
+        server.takeRequest().let {
+            assertEquals("PATCH", it.method)
+            assertEquals("/books/api/v1/books/7/metadata", it.path)
+            assertEquals("""{"title":"New"}""", it.body.readUtf8())
+        }
     }
 }
 

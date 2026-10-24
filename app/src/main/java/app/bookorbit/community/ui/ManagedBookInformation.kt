@@ -57,6 +57,8 @@ class BookManagementViewModel(application: Application) : AndroidViewModel(appli
         app.api.collectionMembership(collection, id, add, owner)
     }
 
+    fun reload() = update {}
+
     private fun update(action: (Int) -> Unit) = perform {
         val id = mutable.value.book!!.id
         action(id)
@@ -97,6 +99,8 @@ fun ManagedBookInformation(app: OrbitApplication, account: Session, original: Eb
     LaunchedEffect(original) { model.bind(original) }
     val state by model.state.collectAsStateWithLifecycle()
     val book = state.book ?: original
+    var editMetadata by remember { mutableStateOf(false) }
+    var editorVersion by remember { mutableIntStateOf(0) }
     var dialog by remember { mutableStateOf("") }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -117,6 +121,16 @@ fun ManagedBookInformation(app: OrbitApplication, account: Session, original: Eb
             TextButton(onClick = { dialog = "rating" }, enabled = !state.busy) {
                 Text("Your rating: " + (book.rating?.toString() ?: "Not rated"))
             }
+        if (account.user.isSuperuser || "library_edit_metadata" in account.user.permissions)
+            TextButton(
+                {
+                    editorVersion++
+                    editMetadata = true
+                },
+                enabled = !state.busy,
+            ) {
+                Text("Edit metadata")
+            }
         if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         state.error?.let {
             Text(
@@ -136,6 +150,10 @@ fun ManagedBookInformation(app: OrbitApplication, account: Session, original: Eb
             )
         BookInformation(book)
     }
+    if (editMetadata)
+        key(editorVersion) {
+            MetadataEditor(book.id, account.scope, { editMetadata = false }, model::reload)
+        }
     if (dialog.isNotEmpty())
         AlertDialog(
             onDismissRequest = { if (!state.busy) dialog = "" },

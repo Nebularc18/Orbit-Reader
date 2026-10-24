@@ -113,7 +113,10 @@ class NotebookViewModel(application: Application) : AndroidViewModel(application
                 app.startActivity(
                     Intent(
                             app,
-                            if (book.file.format?.lowercase() in listOf("pdf", "cbz", "cbr", "cb7"))
+                            if (
+                                book.file.format?.lowercase() in
+                                    listOf("pdf", "cbz", "cbr", "cb7", "fb2", "mobi")
+                            )
                                 PageReaderActivity::class.java
                             else EpubReaderActivity::class.java,
                         )

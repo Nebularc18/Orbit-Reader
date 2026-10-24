@@ -72,6 +72,7 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
     private var noteDraft by mutableStateOf<ReadingNote?>(null)
     private var controlsVisible by mutableStateOf(false)
     private val snackbar = SnackbarHostState()
+    private lateinit var readAlong: ReadAlongController
     private lateinit var readAloud: ReadAloudController
     private var speechLocator: Locator? = null
     private var showSpeech by mutableStateOf(false)
@@ -163,8 +164,45 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
                     }
                 }
             }
+        readAlong =
+            ReadAlongController(
+                this,
+                intent.getStringExtra("scope").orEmpty(),
+                intent.getIntExtra("fileId", 0),
+            ) { clip ->
+                val json =
+                    JSONObject()
+                        .put("href", clip.textPath)
+                        .put("type", "application/xhtml+xml")
+                        .put(
+                            "locations",
+                            JSONObject()
+                                .put("fragments", org.json.JSONArray().put(clip.fragment))
+                                .put(
+                                    "cssSelector",
+                                    "[id=\"${clip.fragment.replace("\\", "\\\\").replace("\"", "\\\"")}\"]",
+                                ),
+                        )
+                        .put("text", JSONObject().put("highlight", clip.quote))
+                Locator.fromJSON(json)?.let { locator ->
+                    lifecycleScope.launch {
+                        navigator?.go(locator)
+                        navigator?.applyDecorations(
+                            listOf(
+                                Decoration(
+                                    "read-along",
+                                    locator,
+                                    Decoration.Style.Highlight(android.graphics.Color.YELLOW),
+                                )
+                            ),
+                            "orbit-read-along",
+                        )
+                    }
+                }
+            }
         setContent {
             val state by model.state.collectAsStateWithLifecycle()
+            var showReadAlong by remember { mutableStateOf(false) }
             var showContents by remember { mutableStateOf(false) }
             var showPreferences by remember { mutableStateOf(false) }
             val prefs = state.preferences
@@ -184,8 +222,11 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
                 }
             ReaderSystemBars(window, controlsVisible, prefs.theme != "dark")
             val touchExploration = rememberTouchExploration()
-            LaunchedEffect(controlsVisible, touchExploration) {
-                if (touchExploration) controlsVisible = true
+            val keyboardNavigation =
+                androidx.compose.ui.platform.LocalInputModeManager.current.inputMode ==
+                    androidx.compose.ui.input.InputMode.Keyboard
+            LaunchedEffect(controlsVisible, touchExploration, keyboardNavigation) {
+                if (touchExploration || keyboardNavigation) controlsVisible = true
                 else if (controlsVisible) {
                     delay(6000)
                     controlsVisible = false
@@ -214,6 +255,7 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
                                     actions = {
                                         IconButton(
                                             onClick = {
+                                                readAlong.pause()
                                                 val book = state.book ?: return@IconButton
                                                 val current = navigator ?: return@IconButton
                                                 lifecycleScope.launch {
@@ -266,6 +308,19 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
                                     Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 ) {
+                                    TextButton(
+                                        onClick = {
+                                            readAloud.pause()
+                                            val book = state.book ?: return@TextButton
+                                            navigator?.currentLocator?.value?.let {
+                                                readAlong.load(book, it.href.toString())
+                                                showReadAlong = true
+                                            }
+                                        },
+                                        enabled = navigator != null,
+                                    ) {
+                                        Text("Read Along")
+                                    }
                                     TextButton(
                                         onClick = { mark(false) },
                                         enabled = navigator != null,
@@ -382,6 +437,7 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
                             }
                     navigator?.applyDecorations(decorations, "orbit-notes")
                 }
+                if (showReadAlong) ReadAlongDialog(readAlong) { showReadAlong = false }
                 if (showSpeech) ReadAloudDialog(readAloud) { showSpeech = false }
                 noteDraft?.let { draft ->
                     ReadingNoteEditor(draft, { noteDraft = null }) {
@@ -600,18 +656,23 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
         )
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                fragment.currentLocator.collect { model.saveLocation(it) }
+                fragment.currentLocator.collect {
+                    model.saveLocation(it)
+                    readAlong.location(it.href.toString())
+                }
             }
         }
     }
 
     override fun onPause() {
+        if (::readAlong.isInitialized) readAlong.pause()
         if (::readAloud.isInitialized) readAloud.pause()
         navigator?.currentLocator?.value?.let(model::saveLocation)
         super.onPause()
     }
 
     override fun onDestroy() {
+        if (::readAlong.isInitialized) readAlong.close()
         if (::readAloud.isInitialized) readAloud.close()
         super.onDestroy()
     }

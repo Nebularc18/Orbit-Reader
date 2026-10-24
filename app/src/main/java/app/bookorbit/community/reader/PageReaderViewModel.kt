@@ -25,6 +25,7 @@ data class PageReaderState(
     val error: String? = null,
     val selection: PdfTextSelection? = null,
     val notice: String? = null,
+    val pageText: String? = null,
 )
 
 class PageReaderViewModel(application: Application) : AndroidViewModel(application) {
@@ -58,6 +59,7 @@ class PageReaderViewModel(application: Application) : AndroidViewModel(applicati
                                     PagedDocument(
                                         storage.content(book.file),
                                         book.file.format?.lowercase() == "pdf",
+                                        book.file.format?.lowercase() in listOf("fb2", "mobi"),
                                     )
                                 val page =
                                     (note?.let { ReadingPlace(it.revision, it.locator) }
@@ -94,6 +96,45 @@ class PageReaderViewModel(application: Application) : AndroidViewModel(applicati
     fun go(page: Int) {
         if (mutable.value.busy || page !in 0 until mutable.value.count) return
         job = viewModelScope.launch { render(page) }
+    }
+
+    fun readPageText() {
+        val page = mutable.value.page
+        if (mutable.value.busy) return
+        mutable.update { it.copy(busy = true, pageText = "") }
+        job =
+            viewModelScope.launch {
+                try {
+                    val text =
+                        withContext(Dispatchers.IO) {
+                            lock.withLock {
+                                check(app.sessions.read()?.scope == owner)
+                                document!!.pageText(page)
+                            }
+                        }
+                    mutable.update {
+                        it.copy(
+                            busy = false,
+                            pageText = text.takeIf { _ -> it.pageText != null && it.page == page },
+                        )
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    mutable.update {
+                        it.copy(
+                            busy = false,
+                            pageText =
+                                "Could not read this page's text."
+                                    .takeIf { _ -> it.pageText != null },
+                        )
+                    }
+                }
+            }
+    }
+
+    fun closePageText() {
+        mutable.update { it.copy(pageText = null) }
     }
 
     fun selectText(page: Int, ax: Double, ay: Double, bx: Double, by: Double) {
@@ -142,7 +183,7 @@ class PageReaderViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private suspend fun render(page: Int) {
-        mutable.update { it.copy(busy = true, error = null, selection = null) }
+        mutable.update { it.copy(busy = true, error = null, selection = null, pageText = null) }
         try {
             val bitmap =
                 withContext(Dispatchers.IO) {
