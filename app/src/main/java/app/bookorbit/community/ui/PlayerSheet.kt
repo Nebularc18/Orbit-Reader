@@ -414,6 +414,19 @@ fun PlayerSheet(
             title = { Text("Sleep timer") },
             text = {
                 Column {
+                    listOf(0, 15, 30, 45, 60).forEach { minutes ->
+                        TextButton(
+                            onClick = {
+                                controller.sendCustomCommand(
+                                    SessionCommand(SLEEP_TIMER, Bundle.EMPTY),
+                                    Bundle().apply { putInt("minutes", minutes) },
+                                )
+                                showTimer = false
+                            }
+                        ) {
+                            Text(if (minutes == 0) "Off" else "$minutes minutes")
+                        }
+                    }
                     TextButton(
                         enabled =
                             timeline.chapterEnd(
@@ -429,19 +442,6 @@ fun PlayerSheet(
                         },
                     ) {
                         Text("End of chapter")
-                    }
-                    listOf(0, 15, 30, 45, 60).forEach { minutes ->
-                        TextButton(
-                            onClick = {
-                                controller.sendCustomCommand(
-                                    SessionCommand(SLEEP_TIMER, Bundle.EMPTY),
-                                    Bundle().apply { putInt("minutes", minutes) },
-                                )
-                                showTimer = false
-                            }
-                        ) {
-                            Text(if (minutes == 0) "Off" else "$minutes minutes")
-                        }
                     }
                 }
             },

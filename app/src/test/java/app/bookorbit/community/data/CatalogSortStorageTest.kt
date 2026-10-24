@@ -11,6 +11,29 @@ import org.robolectric.annotation.Config
 @Config(sdk = [28])
 class CatalogSortStorageTest {
     @Test
+    fun `legacy want to read preference opens the combined unread shelf`() {
+        val context = RuntimeEnvironment.getApplication()
+        context
+            .getSharedPreferences("catalog-read-filters", 0)
+            .edit()
+            .clear()
+            .putString("a/audio", "WANT_TO_READ")
+            .putString("a/ebooks", "WANT_TO_READ")
+            .putString("b/audio", "FINISHED")
+            .commit()
+        assertEquals(CatalogReadFilter.UNREAD, CatalogReadFilterStorage(context, "a").read("audio"))
+        assertEquals(
+            CatalogReadFilter.UNREAD,
+            CatalogReadFilterStorage(context, "a").read("ebooks"),
+        )
+        assertEquals(
+            CatalogReadFilter.FINISHED,
+            CatalogReadFilterStorage(context, "b").read("audio"),
+        )
+        assertEquals(CatalogReadFilter.ALL, CatalogReadFilterStorage(context, "c").read("audio"))
+    }
+
+    @Test
     fun `reading filters persist per shelf and account`() {
         val context = RuntimeEnvironment.getApplication()
         context.getSharedPreferences("catalog-read-filters", 0).edit().clear().commit()

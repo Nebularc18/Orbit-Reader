@@ -296,7 +296,7 @@ class OrbitApiTest {
                 )
             }
         }
-        assertEquals(listOf("unread"), CatalogReadFilter.UNREAD.statuses)
+        assertEquals(listOf("unread", "want_to_read"), CatalogReadFilter.UNREAD.statuses)
         assertEquals(listOf("read"), CatalogReadFilter.FINISHED.statuses)
         assertEquals(listOf("reading", "rereading"), CatalogReadFilter.IN_PROGRESS.statuses)
     }
