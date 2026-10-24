@@ -12,8 +12,11 @@ android {
         applicationId = "app.bookorbit.community"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.2.0"
+        versionCode =
+            providers.gradleProperty("releaseVersionCode").orElse("1").get().toInt().also {
+                require(it in 1..2100000000) { "releaseVersionCode must be in 1..2100000000" }
+            }
+        versionName = providers.gradleProperty("releaseVersionName").orElse("0.0.0-dev").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true }

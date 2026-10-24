@@ -30,13 +30,15 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
-      - name: Validate tag
+      - name: Prepare release version
         shell: bash
         run: |
           if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo '::error::Use a version tag such as v0.1.0 or v0.2.0-beta.1.'
             exit 1
           fi
+          echo "RELEASE_VERSION_NAME=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+          echo "RELEASE_VERSION_CODE=$((GITHUB_RUN_NUMBER + 1))" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -56,7 +58,11 @@ jobs:
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"'
 
       - name: Verify and build
-        run: ./gradlew --no-daemon spotlessCheck :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:lintRelease :app:assembleRelease
+        run: >-
+          ./gradlew --no-daemon
+          -PreleaseVersionName="$RELEASE_VERSION_NAME"
+          -PreleaseVersionCode="$RELEASE_VERSION_CODE"
+          spotlessCheck :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:lintRelease :app:assembleRelease
 
       - name: Check APK version
         run: |
@@ -69,7 +75,8 @@ jobs:
           assert metadata['applicationId'] == 'app.bookorbit.community', 'Unexpected application ID'
           elements = metadata['elements']
           assert len(elements) == 1, 'Expected one universal APK'
-          assert 'v' + elements[0]['versionName'] == os.environ['RELEASE_TAG'], 'Tag must match versionName in app/build.gradle.kts'
+          assert 'v' + elements[0]['versionName'] == os.environ['RELEASE_TAG'], 'APK version must match the release tag'
+          assert elements[0]['versionCode'] == int(os.environ['RELEASE_VERSION_CODE']), 'Unexpected APK version code'
           PY
 
       - name: Sign and verify APK
