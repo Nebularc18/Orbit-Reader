@@ -5,6 +5,8 @@ import android.util.AtomicFile
 import app.bookorbit.community.data.BookCard
 import app.bookorbit.community.data.CatalogSort
 import app.bookorbit.community.data.EbookFile
+import app.bookorbit.community.data.EbookProgress
+import app.bookorbit.community.data.EbookProgressWrite
 import app.bookorbit.community.data.sortLocalBooks
 import app.bookorbit.community.data.wireJson
 import java.io.File
@@ -20,6 +22,15 @@ data class SavedEbook(
     val title: String,
     val authors: List<String>,
     val file: EbookFile,
+)
+
+@Serializable
+data class ReadingUpload(
+    val revision: String,
+    val baseline: EbookProgress?,
+    val pending: EbookProgressWrite? = null,
+    val blocked: Boolean = false,
+    val locator: String? = null,
 )
 
 @Serializable data class ReadingPlace(val revision: String, val locator: String)
@@ -204,6 +215,79 @@ class EbookStorage(context: Context, scope: String) {
                 .take(10)
                 .toList()
         }
+
+    fun readingUpload(fileId: Int): ReadingUpload? =
+        synchronized(lock) {
+            read(File(dir(fileId), "progress-upload.json"))?.let {
+                wireJson.decodeFromString<ReadingUpload>(it)
+            }
+        }
+
+    fun prepareReadingUpload(file: EbookFile, baseline: EbookProgress?) =
+        synchronized(lock) {
+            val saved = readingUpload(file.id)
+            if (
+                saved == null ||
+                    saved.revision != file.revision ||
+                    (saved.baseline == null && saved.pending == null)
+            ) {
+                writeReadingUpload(file.id, ReadingUpload(file.revision, baseline))
+            }
+        }
+
+    fun checkpointReadingUpload(
+        file: EbookFile,
+        value: EbookProgressWrite,
+        locator: String? = null,
+    ) =
+        synchronized(lock) {
+            val saved =
+                readingUpload(file.id)?.takeIf { it.revision == file.revision }
+                    ?: ReadingUpload(file.revision, null)
+            writeReadingUpload(file.id, saved.copy(pending = value, locator = locator))
+        }
+
+    fun acknowledgeReadingUpload(fileId: Int, sent: ReadingUpload, remote: EbookProgress) =
+        synchronized(lock) {
+            val latest = readingUpload(fileId) ?: return@synchronized
+            if (latest.revision != sent.revision || latest.baseline != sent.baseline)
+                return@synchronized
+            writeReadingUpload(
+                fileId,
+                latest.copy(
+                    baseline = remote,
+                    pending =
+                        latest.pending.takeUnless {
+                            it == sent.pending && latest.locator == sent.locator
+                        },
+                ),
+            )
+        }
+
+    fun blockReadingUpload(fileId: Int) =
+        synchronized(lock) {
+            readingUpload(fileId)?.let { writeReadingUpload(fileId, it.copy(blocked = true)) }
+        }
+
+    fun resetReadingUpload(fileId: Int, baseline: EbookProgress, discardPending: Boolean = false) =
+        synchronized(lock) {
+            readingUpload(fileId)?.let {
+                writeReadingUpload(
+                    fileId,
+                    it.copy(
+                        baseline = baseline,
+                        pending =
+                            it.pending?.takeUnless { value ->
+                                discardPending || matchesReadingPosition(baseline, value)
+                            },
+                        blocked = false,
+                    ),
+                )
+            }
+        }
+
+    private fun writeReadingUpload(fileId: Int, value: ReadingUpload) =
+        write(File(dir(fileId), "progress-upload.json"), wireJson.encodeToString(value))
 
     fun preferredFile(bookId: Int): Int? =
         synchronized(lock) { read(File(root, "preferred-$bookId"))?.toIntOrNull() }

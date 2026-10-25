@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.bookorbit.community.OrbitApplication
+import app.bookorbit.community.data.EbookProgressWrite
 import app.bookorbit.community.data.wireJson
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,6 +32,8 @@ data class PageReaderState(
 class PageReaderViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as OrbitApplication
     private var owner = ""
+    private val persistence = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var syncJob: Job? = null
     private var document: PagedDocument? = null
     private val lock = Mutex()
     private var job: Job? = null
@@ -77,8 +80,12 @@ class PageReaderViewModel(application: Application) : AndroidViewModel(applicati
                                 book to page.coerceIn(0, document!!.pageCount - 1)
                             }
                         }
+                    withContext(Dispatchers.IO) {
+                        prepareAutomaticReadingSync(app, owner, pair.first.file)
+                    }
                     mutable.value = PageReaderState(book = pair.first, count = document!!.pageCount)
                     render(pair.second)
+                    syncOnExit()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
@@ -199,6 +206,17 @@ class PageReaderViewModel(application: Application) : AndroidViewModel(applicati
                                     wireJson.encodeToString(PageLocation(page)),
                                 ),
                             )
+                        EbookStorage(app, owner)
+                            .checkpointReadingUpload(
+                                book.file,
+                                EbookProgressWrite(
+                                    (page + 1) * 100.0 / document!!.pageCount,
+                                    (page + 1).takeUnless {
+                                        book.file.format?.lowercase() in setOf("fb2", "mobi")
+                                    },
+                                ),
+                            )
+                        enqueueAutomaticReadingSync(app, owner, book.file.id, flush = false)
                         bitmap to document!!.dimensions(page)
                     }
                 }
@@ -224,8 +242,33 @@ class PageReaderViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun syncOnExit() {
+        val previous = syncJob
+        syncJob =
+            persistence.launch {
+                previous?.join()
+                lock.withLock {
+                    val book = mutable.value.book ?: return@withLock
+                    try {
+                        enqueueAutomaticReadingSync(app, owner, book.file.id)
+                    } catch (_: Exception) {
+                        mutable.update {
+                            it.copy(
+                                notice =
+                                    "Your position is saved locally. Open the book again to retry sync."
+                            )
+                        }
+                    }
+                }
+            }
+    }
+
     override fun onCleared() {
-        runBlocking { lock.withLock { document?.close() } }
+        runBlocking {
+            syncJob?.join()
+            lock.withLock { document?.close() }
+        }
+        persistence.cancel()
         super.onCleared()
     }
 }

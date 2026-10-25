@@ -6,6 +6,7 @@ import app.bookorbit.community.OrbitApplication
 import app.bookorbit.community.data.*
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 
@@ -13,7 +14,14 @@ fun sameReadingProgress(a: EbookProgress, b: EbookProgress): Boolean = a == b
 
 class ReadingSyncWorker(context: Context, params: WorkerParameters) :
     CoroutineWorker(context, params) {
-    override suspend fun doWork(): Result =
+    override suspend fun doWork(): Result {
+        val app = applicationContext as OrbitApplication
+        val owner = inputData.getString("owner") ?: return Result.failure()
+        val fileId = inputData.getInt("fileId", 0)
+        return app.readingSyncLock(owner, fileId).withLock { publish() }
+    }
+
+    private suspend fun publish(): Result =
         withContext(Dispatchers.IO) {
             val app = applicationContext as OrbitApplication
             val owner = inputData.getString("owner") ?: return@withContext Result.failure()
@@ -62,6 +70,9 @@ class ReadingSyncWorker(context: Context, params: WorkerParameters) :
             }
             try {
                 app.api.saveEbookProgress(fileId, owner, value)
+                val saved = app.api.ebookProgress(fileId, owner)
+                if (matchesReadingPosition(saved, value))
+                    EbookStorage(app, owner).resetReadingUpload(fileId, saved)
                 Result.success(workDataOf("message" to "Reading progress published."))
             } catch (_: IOException) {
                 // A timed-out write may have succeeded. Let the user re-read the server instead of

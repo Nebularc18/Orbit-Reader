@@ -6,6 +6,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.bookorbit.community.OrbitApplication
+import app.bookorbit.community.data.EbookProgressWrite
 import java.io.IOException
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,6 +57,7 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
                             check(app.sessions.read()?.scope == owner)
                             val storage = EbookStorage(app, owner)
                             val book = storage.book(fileId) ?: throw IOException()
+                            prepareAutomaticReadingSync(app, owner, book.file)
                             require(storage.ready(book.file)) {
                                 "Open this book from the Read tab to save an offline copy first."
                             }
@@ -152,6 +154,7 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
                         throw IOException()
                     }
                     mutable.value = loaded
+                    syncOnExit()
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
@@ -183,7 +186,30 @@ class EpubReaderViewModel(application: Application) : AndroidViewModel(applicati
         val book = mutable.value.book ?: return
         mutable.update { it.copy(initialLocator = locator) }
         val place = ReadingPlace(book.file.revision, locator.toJSON().toString())
-        persist { savePlace(fileId, place) }
+        persist {
+            savePlace(fileId, place)
+            locator.locations.totalProgression?.let { progression ->
+                checkpointReadingUpload(
+                    book.file,
+                    EbookProgressWrite((progression * 100).coerceIn(0.0, 100.0)),
+                    locator = place.locator,
+                )
+                enqueueAutomaticReadingSync(app, owner, fileId, flush = false)
+            }
+        }
+    }
+
+    fun syncOnExit() {
+        val previous = saveJob
+        saveJob =
+            persistence.launch {
+                previous?.join()
+                try {
+                    enqueueAutomaticReadingSync(app, owner, fileId)
+                } catch (_: Exception) {
+                    message("Your position is saved locally. Open the book again to retry sync.")
+                }
+            }
     }
 
     fun preferences(value: ReadingPreferences) {
