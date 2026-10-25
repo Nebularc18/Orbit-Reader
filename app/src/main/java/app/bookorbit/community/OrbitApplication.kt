@@ -23,6 +23,10 @@ class OrbitApplication : Application() {
     val offlineBudget by lazy { app.bookorbit.community.download.OfflineBudget(this) }
     val downloadSlots = Semaphore(2)
     private val downloadLocks = Array(64) { Mutex() }
+    private val readingSyncLocks = Array(64) { Mutex() }
+
+    fun readingSyncLock(scope: String, fileId: Int): Mutex =
+        readingSyncLocks[("$scope-$fileId".hashCode() and Int.MAX_VALUE) % readingSyncLocks.size]
 
     fun downloadLock(scope: String, bookId: Int): Mutex =
         downloadLocks[("$scope-$bookId".hashCode() and Int.MAX_VALUE) % downloadLocks.size]

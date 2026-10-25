@@ -11,9 +11,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.work.WorkManager
 import app.bookorbit.community.OrbitApplication
 import app.bookorbit.community.data.*
+import app.bookorbit.community.reader.EbookStorage
 import app.bookorbit.community.reader.queueReadingSync
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.sync.withLock
 
 class ReadingSyncViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as OrbitApplication
@@ -29,12 +31,42 @@ class ReadingSyncViewModel(application: Application) : AndroidViewModel(applicat
         viewModelScope.launch {
             try {
                 remote.value = withContext(Dispatchers.IO) { app.api.ebookProgress(fileId, owner) }
-                message.value = null
+                val paused =
+                    withContext(Dispatchers.IO) {
+                        EbookStorage(app, owner).readingUpload(fileId)?.blocked == true
+                    }
+                message.value =
+                    if (paused)
+                        "Automatic sync paused because server progress changed or could not be checked. Choose which position to keep."
+                    else null
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
                 remote.value = null
                 message.value = "Cannot reach the server. Your local position is safe."
+            } finally {
+                busy.value = false
+            }
+        }
+    }
+
+    fun useServer(owner: String, fileId: Int, value: EbookProgress, onReady: () -> Unit) {
+        if (busy.value) return
+        busy.value = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    app.readingSyncLock(owner, fileId).withLock {
+                        check(app.sessions.read()?.scope == owner)
+                        EbookStorage(app, owner)
+                            .resetReadingUpload(fileId, value, discardPending = true)
+                    }
+                }
+                onReady()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                message.value = "Could not apply server progress. Try again."
             } finally {
                 busy.value = false
             }
@@ -92,7 +124,7 @@ fun ReadingSyncDialog(
                 Text("This device: ${"%.1f".format(value.percentage)}%")
                 remote?.let { Text("Server: ${"%.1f".format(it.percentage)}%") }
                 Text(
-                    "Publishing replaces the server position. BookOrbit cannot lock ebook progress against simultaneous writes."
+                    "Progress syncs automatically when you leave the reader. Publishing here replaces the server position. Simultaneous updates can still race."
                 )
                 if (value.pageNumber == null)
                     Text(
@@ -105,8 +137,10 @@ fun ReadingSyncDialog(
                 remote?.let { server ->
                     TextButton(
                         onClick = {
-                            onUseServer(server)
-                            onDismiss()
+                            model.useServer(owner, fileId, server) {
+                                onUseServer(server)
+                                onDismiss()
+                            }
                         },
                         enabled = !busy && !pending,
                     ) {

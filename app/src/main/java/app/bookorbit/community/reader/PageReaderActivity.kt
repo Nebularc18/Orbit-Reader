@@ -44,6 +44,11 @@ class PageReaderActivity : ComponentActivity() {
     private val model: PageReaderViewModel by viewModels()
     private val notesModel: ReadingNotesViewModel by viewModels()
 
+    override fun onPause() {
+        model.syncOnExit()
+        super.onPause()
+    }
+
     @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

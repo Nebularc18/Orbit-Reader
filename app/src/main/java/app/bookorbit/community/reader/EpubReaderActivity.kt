@@ -668,6 +668,7 @@ class EpubReaderActivity : FragmentActivity(), EpubNavigatorFragment.Listener {
         if (::readAlong.isInitialized) readAlong.pause()
         if (::readAloud.isInitialized) readAloud.pause()
         navigator?.currentLocator?.value?.let(model::saveLocation)
+        model.syncOnExit()
         super.onPause()
     }
 
