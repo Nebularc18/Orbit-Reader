@@ -687,6 +687,11 @@ class OrbitApi(val sessions: SessionStore) {
 
     fun progress(bookId: Int): PlaybackState? = decode(request("audiobooks/$bookId/playback-state"))
 
+    fun saveListeningSession(fileId: Int, value: ListeningSessionWrite, owner: String) {
+        request("books/files/$fileId/sessions", "POST", wireJson.encodeToString(value), owner)
+            .close()
+    }
+
     fun saveProgress(
         bookId: Int,
         value: ProgressWrite,

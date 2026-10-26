@@ -386,3 +386,13 @@ data class UploadSession(
     val status: String,
     val bookId: Int? = null,
 )
+
+@Serializable
+data class ListeningSessionWrite(
+    val sessionId: String,
+    val startedAt: String,
+    val endedAt: String,
+    val durationSeconds: Int,
+    val sessionType: String,
+    val source: String,
+)

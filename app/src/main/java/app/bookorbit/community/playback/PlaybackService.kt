@@ -39,6 +39,7 @@ class PlaybackService : MediaLibraryService() {
     private var manifest: AudioManifest? = null
     private var accountScope: String? = null
     private var saveJob: Job? = null
+    private val sessionTracker = ListeningSessionTracker()
     private var timer: Job? = null
     private var chapterTimer: PlayerMessage? = null
     private var chapterTarget: AudioSeek? = null
@@ -67,6 +68,7 @@ class PlaybackService : MediaLibraryService() {
         player.addListener(
             object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    captureListeningSession()
                     if (!isPlaying) capture()
                 }
 
@@ -534,6 +536,7 @@ class PlaybackService : MediaLibraryService() {
             val isDownloaded = withContext(Dispatchers.IO) { storage.downloaded(result.first) }
             if (app.sessions.read()?.scope != account.scope) return false
             capture()
+            captureListeningSession(stop = true)
             saveJob?.join()
             if (app.sessions.read()?.scope != account.scope) return false
             if (chapterTarget != null) cancelSleepTimer()
@@ -697,7 +700,34 @@ class PlaybackService : MediaLibraryService() {
         player.pause()
     }
 
+    private fun captureListeningSession(stop: Boolean = false) {
+        val owner = accountScope?.takeIf { app.sessions.read()?.scope == it }
+        val fileId =
+            manifest?.assets?.firstOrNull { it.assetId == player.currentMediaItem?.mediaId }?.fileId
+        val checkpoint =
+            sessionTracker.sample(
+                owner,
+                fileId,
+                !stop && player.isPlaying,
+                Instant.now(),
+                android.os.SystemClock.elapsedRealtime(),
+            ) ?: return
+        val previous = saveJob
+        saveJob =
+            scope.launch(Dispatchers.IO) {
+                previous?.join()
+                try {
+                    ListeningSessionStorage(this@PlaybackService, checkpoint.owner)
+                        .save(PendingListeningSession(checkpoint.fileId, checkpoint.value))
+                    enqueueListeningSessions(this@PlaybackService, checkpoint.owner)
+                } catch (_: IOException) {
+                    app.playbackMessage.value = "Could not save listening time on this device."
+                }
+            }
+    }
+
     private fun capture() {
+        captureListeningSession()
         val book = manifest ?: return
         val owner = accountScope ?: return
         val assetId = player.currentMediaItem?.mediaId ?: return
@@ -732,6 +762,7 @@ class PlaybackService : MediaLibraryService() {
     override fun onDestroy() {
         cancelSleepTimer()
         capture()
+        captureListeningSession(stop = true)
         // Persist the final position before the service's coroutine scope disappears.
         runBlocking {
             saveJob?.join()

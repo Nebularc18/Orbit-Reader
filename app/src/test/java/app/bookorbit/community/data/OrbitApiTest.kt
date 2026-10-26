@@ -35,6 +35,45 @@ class OrbitApiTest {
     }
 
     @Test
+    fun `listening sessions send native source and listen type with account scope`() {
+        val owner = store.read()!!.scope
+        val value =
+            ListeningSessionWrite(
+                "session-1",
+                "2026-10-25T23:59:00Z",
+                "2026-10-26T00:01:00Z",
+                120,
+                "listen",
+                "android",
+            )
+        server.enqueue(MockResponse().setResponseCode(204))
+        api.saveListeningSession(42, value, owner)
+        server.takeRequest().let {
+            assertEquals("POST", it.method)
+            assertEquals("/books/api/v1/books/files/42/sessions", it.path)
+            val body = wireJson.parseToJsonElement(it.body.readUtf8()).jsonObject
+            assertEquals(
+                setOf(
+                    "sessionId",
+                    "startedAt",
+                    "endedAt",
+                    "durationSeconds",
+                    "sessionType",
+                    "source",
+                ),
+                body.keys,
+            )
+            assertEquals("listen", body["sessionType"]!!.jsonPrimitive.content)
+            assertEquals("android", body["source"]!!.jsonPrimitive.content)
+            assertEquals(120, body["durationSeconds"]!!.jsonPrimitive.int)
+        }
+        assertThrows(ApiFailure::class.java) {
+            api.saveListeningSession(42, value, "other-account")
+        }
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
     fun `book management sends exact contracts and rejects a switched account`() {
         val owner = store.read()!!.scope
         server.enqueue(MockResponse().setBody("{}"))
