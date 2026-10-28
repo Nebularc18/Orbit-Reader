@@ -6,8 +6,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.FormatListBulleted
 import androidx.compose.material.icons.rounded.*
@@ -23,6 +21,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -121,9 +120,8 @@ fun PlayerSheet(
     }
     var coverColor by remember(book.book.id) { mutableStateOf<Color?>(null) }
     var more by remember { mutableStateOf(false) }
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize()) {
         val glow = coverColor ?: MaterialTheme.colorScheme.primary
-        val coverSize = (maxHeight * .28f).coerceIn(168.dp, 260.dp)
         Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.surface))
         androidx.compose.foundation.Canvas(Modifier.matchParentSize()) {
             drawRect(
@@ -137,13 +135,12 @@ fun PlayerSheet(
         Column(
             Modifier.align(Alignment.TopCenter)
                 .widthIn(max = 640.dp)
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .verticalScroll(rememberScrollState())
+                .fillMaxSize()
+                .safeDrawingPadding()
                 .padding(horizontal = 24.dp)
-                .padding(top = 12.dp, bottom = 24.dp),
+                .padding(vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 CircleAction(Icons.Rounded.KeyboardArrowDown, "Close player", onClose)
@@ -174,16 +171,22 @@ fun PlayerSheet(
                     }
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            BookCover(
-                app,
-                session,
-                book.book.id,
-                book.revision,
-                Modifier.size(coverSize),
-                onColor = { coverColor = it },
-            )
-            Spacer(Modifier.height(8.dp))
+            // Measure the controls first so artwork gives up space on shorter screens.
+            BoxWithConstraints(
+                Modifier.fillMaxWidth().weight(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                val coverSize = minOf(maxHeight, maxWidth, 260.dp)
+                if (coverSize > 0.dp)
+                    BookCover(
+                        app,
+                        session,
+                        book.book.id,
+                        book.revision,
+                        Modifier.size(coverSize),
+                        onColor = { coverColor = it },
+                    )
+            }
             Text(
                 book.book.title,
                 textAlign = TextAlign.Center,
@@ -205,6 +208,8 @@ fun PlayerSheet(
                 chapter?.title ?: "Part ${assetIndex + 1}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             PlaybackTimeline(
                 label =
@@ -329,12 +334,22 @@ fun PlayerSheet(
                     active = sleepAtChapterEnd || sleep > 0,
                 )
             }
-            listening.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            listening.error?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             syncWork.firstOrNull()?.outputData?.getString("error")?.let {
                 Text(
                     it,
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
