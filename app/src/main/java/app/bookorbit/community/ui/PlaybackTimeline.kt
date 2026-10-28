@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
@@ -49,7 +50,12 @@ fun PlaybackTimeline(
                 Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
                     contentDescription = "$label timeline"
                 },
-            thumb = { Box(Modifier.size(12.dp).background(progressColor, CircleShape)) },
+            thumb = {
+                // Center the circle within the slider's minimum-height thumb slot.
+                Box(Modifier.width(12.dp).height(48.dp), contentAlignment = Alignment.Center) {
+                    Box(Modifier.size(12.dp).background(progressColor, CircleShape))
+                }
+            },
             track = { state ->
                 Canvas(Modifier.fillMaxWidth().height(4.dp)) {
                     val fraction = (state.value / state.valueRange.endInclusive).coerceIn(0f, 1f)

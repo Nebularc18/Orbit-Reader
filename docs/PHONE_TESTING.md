@@ -181,3 +181,11 @@ The tablet run exposed controls covering the top of the PDF. Applied Scaffold pa
 The software tablet's Android runtime and UI automation later failed, including a SIGTRAP in uiautomator's ART trampoline, DeadSystemException, and unavailable activity/package services. The final patched APK could not be reinstalled into that failed runtime, so full older-Android gesture verification is not claimed. A separate Java check used the same MuPDF classes and x86_64 native library from the built APK through Android's app_process on API 28. Against the synthetic PDF it verified three pages, the expected page text, word selection, and the selected word's highlight rectangle. The check passed. This proves the engine path on Android 9; it does not replace a stable full-app gesture test or a physical tablet check.
 
 Restored TalkBack to off and reset the temporary Android Accessibility Suite notification permission. Kept the phone's original portrait orientation and text size, left playback stopped, and shut down the temporary tablet and synthetic server after testing. The SDK, tablet profile, native-check code, and test media remained outside the repository. No production services or real user credentials were used.
+
+## Player layout and slider alignment
+
+October 28, 2026. The player now fits its available height without scrolling. Controls are measured before the cover, which shrinks to the remaining space. System-bar insets and bounded chapter/error text keep the bottom tools visible. The custom slider thumb is centered within its layout slot.
+
+On the Pixel 9 Pro Android 15 emulator, installed the final debug APK over the existing fixture account. Verified the cover, both timelines, playback controls, bottom tools, and a two-line progress-conflict warning fit in portrait without clipping. Opened and closed Chapters. Screenshot pixel checks confirmed the thumb and track have the same vertical center on both timelines. Left playback stopped and stopped the temporary synthetic fixture. The Samsung screenshot connection failed, so physical-device verification is not claimed.
+
+Formatting, all 176 unit tests, Android debug lint, and debug assembly passed. Release lint, assembly, signing, and asset verification run in the tagged release workflow.
