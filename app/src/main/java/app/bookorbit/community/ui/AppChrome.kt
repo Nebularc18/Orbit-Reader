@@ -3,7 +3,6 @@ package app.bookorbit.community.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -15,8 +14,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -35,49 +32,33 @@ fun OrbitTabBar(selectedTab: Int, onSelect: (Int) -> Unit) {
         )
     val labels = listOf("Home", "Library", "Listen", "Read", "Downloads")
     val tabIds = listOf(0, 4, 1, 2, 3)
-    Surface(
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        shadowElevation = 8.dp,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+    NavigationBar(
+        containerColor = MaterialTheme.colorScheme.background,
+        tonalElevation = 0.dp,
+        windowInsets = WindowInsets(0, 0, 0, 0),
     ) {
-        Row(Modifier.padding(5.dp)) {
-            labels.forEachIndexed { index, label ->
-                Surface(
-                    onClick = { onSelect(tabIds[index]) },
-                    modifier =
-                        Modifier.weight(1f).heightIn(min = 64.dp).semantics {
-                            selected = selectedTab == tabIds[index]
-                            role = Role.Tab
-                        },
-                    shape = CircleShape,
-                    color =
-                        if (selectedTab == tabIds[index])
-                            MaterialTheme.colorScheme.primary.copy(alpha = .17f)
-                        else Color.Transparent,
-                ) {
-                    Column(
-                        Modifier.padding(vertical = 8.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(3.dp),
-                    ) {
-                        val tint =
-                            if (selectedTab == tabIds[index]) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant
-                        Icon(icons[index], null, Modifier.size(22.dp), tint = tint)
-                        Text(
-                            label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = tint,
-                            fontSize = 10.sp,
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-            }
+        labels.forEachIndexed { index, label ->
+            NavigationBarItem(
+                selected = selectedTab == tabIds[index],
+                onClick = { onSelect(tabIds[index]) },
+                icon = { Icon(icons[index], null, Modifier.size(22.dp)) },
+                label = {
+                    Text(
+                        label,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                },
+                colors =
+                    NavigationBarItemDefaults.colors(
+                        selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                        indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+            )
         }
     }
 }
@@ -104,7 +85,7 @@ fun AppearanceSheet(
                 .padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            Text("Make yourself at home", style = MaterialTheme.typography.titleLarge)
+            Text("Appearance and account", style = MaterialTheme.typography.titleLarge)
             Text(
                 "Appearance",
                 style = MaterialTheme.typography.labelLarge,
@@ -116,7 +97,7 @@ fun AppearanceSheet(
                 { model.theme(listOf("System", "Light", "Dark")[it]) },
             )
             Text(
-                "Finish",
+                "Accent color",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

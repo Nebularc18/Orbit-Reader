@@ -57,7 +57,8 @@ fun BookSheet(
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     var confirmDelete by remember { mutableStateOf(false) }
     ModalBottomSheet(
-        modifier = Modifier.fillMaxHeight(0.95f),
+        modifier = Modifier.fillMaxHeight(),
+        contentWindowInsets = { WindowInsets.safeDrawing },
         onDismissRequest = model::closeDetail,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {

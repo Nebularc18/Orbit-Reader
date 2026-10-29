@@ -16,16 +16,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.compositeOver
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -104,8 +103,18 @@ fun OrbitTheme(appearance: Appearance = Appearance(), content: @Composable () ->
         colorScheme = colors,
         typography =
             base.copy(
-                headlineMedium = base.headlineMedium.copy(fontSize = 26.sp, lineHeight = 32.sp),
-                headlineSmall = base.headlineSmall.copy(fontSize = 22.sp, lineHeight = 28.sp),
+                headlineMedium =
+                    base.headlineMedium.copy(
+                        fontFamily = FontFamily.Serif,
+                        fontSize = 30.sp,
+                        lineHeight = 36.sp,
+                    ),
+                headlineSmall =
+                    base.headlineSmall.copy(
+                        fontFamily = FontFamily.Serif,
+                        fontSize = 24.sp,
+                        lineHeight = 30.sp,
+                    ),
                 titleLarge =
                     base.titleLarge.copy(
                         fontSize = 20.sp,
@@ -128,28 +137,8 @@ fun OrbitTheme(appearance: Appearance = Appearance(), content: @Composable () ->
 }
 
 @Composable
-fun AmbientBackground(
-    modifier: Modifier = Modifier,
-    accent: Color = MaterialTheme.colorScheme.primary,
-    content: @Composable BoxScope.() -> Unit,
-) {
-    val background = MaterialTheme.colorScheme.background
-    Box(modifier.background(background)) {
-        Canvas(Modifier.matchParentSize()) {
-            drawRect(
-                Brush.radialGradient(
-                    listOf(accent.copy(alpha = 0.13f), Color.Transparent),
-                    center = Offset(size.width * .85f, 0f),
-                    radius = size.width * 1.1f,
-                )
-            )
-            for (i in 0..2) drawCircle(
-                accent.copy(alpha = .035f),
-                radius = size.width * (.44f + i * .12f),
-                center = Offset(size.width * .93f, size.width * .24f),
-                style = Stroke(1.dp.toPx()),
-            )
-        }
+fun AmbientBackground(modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit) {
+    Box(modifier.background(MaterialTheme.colorScheme.background)) {
         CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface) {
             content()
         }
@@ -288,7 +277,7 @@ fun MiniPlayer(
     }
     Surface(
         onClick = onOpen,
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),

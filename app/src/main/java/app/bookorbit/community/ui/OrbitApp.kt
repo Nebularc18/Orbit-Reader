@@ -178,7 +178,7 @@ fun OrbitApp(
                                         Text(
                                             if (showEbooks) "Reading"
                                             else if (state.offline) "Downloads" else "Listening",
-                                            style = MaterialTheme.typography.titleLarge,
+                                            style = MaterialTheme.typography.headlineSmall,
                                         )
                                         Text(
                                             if (showEbooks) "Books & comics"
@@ -374,7 +374,8 @@ fun OrbitApp(
             }
             if (showPlayer && current != null && controller != null)
                 ModalBottomSheet(
-                    modifier = Modifier.fillMaxHeight(0.98f),
+                    modifier = Modifier.fillMaxHeight(),
+                    contentWindowInsets = { WindowInsets.safeDrawing },
                     dragHandle = null,
                     onDismissRequest = { showPlayer = false },
                     sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -464,8 +465,7 @@ private fun SignIn(
             if (onCancel != null)
                 TextButton(onClick = onCancel, enabled = !busy) { Text("Back to your server") }
             Text(
-                if (onCancel != null) "Connect another server"
-                else "Your library.\nYour listening space.",
+                if (onCancel != null) "Connect another server" else "A home for\nyour books.",
                 style = MaterialTheme.typography.headlineLarge,
                 fontFamily = FontFamily.Serif,
             )

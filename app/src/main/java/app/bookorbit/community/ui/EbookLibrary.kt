@@ -183,7 +183,8 @@ fun EbookLibrary(
         ?.takeIf { state.options || preparing != null }
         ?.let { book ->
             ModalBottomSheet(
-                modifier = Modifier.fillMaxHeight(0.95f),
+                modifier = Modifier.fillMaxHeight(),
+                contentWindowInsets = { WindowInsets.safeDrawing },
                 onDismissRequest = model::closeDetail,
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {

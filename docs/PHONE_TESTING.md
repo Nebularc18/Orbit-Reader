@@ -189,3 +189,13 @@ October 28, 2026. The player now fits its available height without scrolling. Co
 On the Pixel 9 Pro Android 15 emulator, installed the final debug APK over the existing fixture account. Verified the cover, both timelines, playback controls, bottom tools, and a two-line progress-conflict warning fit in portrait without clipping. Opened and closed Chapters. Screenshot pixel checks confirmed the thumb and track have the same vertical center on both timelines. Left playback stopped and stopped the temporary synthetic fixture. The Samsung screenshot connection failed, so physical-device verification is not claimed.
 
 Formatting, all 176 unit tests, Android debug lint, and debug assembly passed. Release lint, assembly, signing, and asset verification run in the tagged release workflow.
+
+## Library design and sheet system-bar insets
+
+October 29, 2026. Home now leads with the current book and moves Activity, Notebook, requests, and uploads into an overflow menu. Standard bottom navigation replaces the floating tab bar. Larger catalog titles and covers, serif screen headings, and a plain background give the library a consistent layout.
+
+On the Pixel 9 Pro Android 15 emulator, installed the updated debug APK over the synthetic fixture account. Checked Home, Listen, Read, Notebook, the overflow menu, and light and dark appearance. Reproduced book-sheet tab labels showing through a gap at the bottom. Replaced fractional outer sheet heights with full-height surfaces and safe-drawing content insets in audiobook, ebook, library-detail, and player sheets. Reopened the audiobook detail sheet after an emulator restart and verified the gap and clipped navigation labels were gone. Verified the player controls and a two-line progress-conflict message still fit without scrolling. The fixture rejected stale progress as expected; no production account or progress was changed.
+
+Gesture navigation was checked on the emulator. Samsung three-button navigation and physical-device checks remain unverified. The phone's app and data were not modified.
+
+The final UI branch passed `./gradlew spotlessCheck :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` with all 176 unit tests passing and no skipped tests.
