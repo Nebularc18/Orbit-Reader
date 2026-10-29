@@ -318,7 +318,8 @@ private fun BrowserBookSheet(
 ) {
     ModalBottomSheet(
         onDismissRequest = onClose,
-        modifier = Modifier.fillMaxHeight(.95f),
+        modifier = Modifier.fillMaxHeight(),
+        contentWindowInsets = { WindowInsets.safeDrawing },
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {
         SystemBarAppearance(MaterialTheme.colorScheme.surface.luminance() > .5f)

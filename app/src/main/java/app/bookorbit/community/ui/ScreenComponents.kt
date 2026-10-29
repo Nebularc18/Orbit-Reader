@@ -33,7 +33,7 @@ fun ScreenHeader(
                 Text(
                     title,
                     modifier = Modifier.semantics { heading() },
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.headlineSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )

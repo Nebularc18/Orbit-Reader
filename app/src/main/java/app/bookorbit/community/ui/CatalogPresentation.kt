@@ -38,7 +38,7 @@ fun CatalogEntry(
     status: String? = null,
 ) {
     if (grid)
-        Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             BookCover(
                 app,
                 account,
@@ -53,13 +53,13 @@ fun CatalogEntry(
                             )
                         )
                             220.dp
-                        else 150.dp
+                        else 164.dp
                     ),
                 ebook,
             )
             Text(
                 book.title ?: "Untitled",
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.titleSmall,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
