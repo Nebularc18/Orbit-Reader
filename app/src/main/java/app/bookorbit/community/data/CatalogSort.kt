@@ -41,7 +41,10 @@ class CatalogSortStorage(context: Context, private val scope: String) {
     }
 }
 
-fun sortLocalBooks(books: Sequence<BookCard>, sort: CatalogSort): List<BookCard> {
+fun sortLocalBooks(books: Sequence<BookCard>, sort: CatalogSort): List<BookCard> =
+    books.sortedWith(localBookOrder(sort)).toList()
+
+internal fun localBookOrder(sort: CatalogSort): Comparator<BookCard> {
     require(sort.local)
     val collator = Collator.getInstance().apply { strength = Collator.PRIMARY }
     fun compareText(a: String?, b: String?, reverse: Boolean = false): Int {
@@ -50,20 +53,18 @@ fun sortLocalBooks(books: Sequence<BookCard>, sort: CatalogSort): List<BookCard>
         val comparison = collator.compare(a, b)
         return if (reverse) -comparison else comparison
     }
-    return books
-        .sortedWith { a, b ->
-            val primary =
-                if (sort.wireField == "author")
-                    compareText(
-                        a.authors.firstOrNull(),
-                        b.authors.firstOrNull(),
-                        sort.direction == "desc",
-                    )
-                else compareText(a.title, b.title, sort.direction == "desc")
-            val secondary =
-                if (primary == 0 && sort.wireField == "author") compareText(a.title, b.title)
-                else primary
-            if (secondary == 0) a.id.compareTo(b.id) else secondary
-        }
-        .toList()
+    return Comparator { a, b ->
+        val primary =
+            if (sort.wireField == "author")
+                compareText(
+                    a.authors.firstOrNull(),
+                    b.authors.firstOrNull(),
+                    sort.direction == "desc",
+                )
+            else compareText(a.title, b.title, sort.direction == "desc")
+        val secondary =
+            if (primary == 0 && sort.wireField == "author") compareText(a.title, b.title)
+            else primary
+        if (secondary == 0) a.id.compareTo(b.id) else secondary
+    }
 }

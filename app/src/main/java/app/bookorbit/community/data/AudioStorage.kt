@@ -57,26 +57,50 @@ class AudioStorage(context: Context, val scope: String) {
         manifestRevision: String,
     ) =
         synchronized(positionLock) {
+            val previous = position(bookId)
             savePosition(
                 bookId,
                 LocalPosition(
                     assetId,
                     milliseconds,
                     capturedAt,
-                    position(bookId)?.revision ?: 0,
+                    previous?.revision ?: 0,
                     manifestRevision,
+                    conflicted =
+                        previous?.let {
+                            it.manifestRevision == manifestRevision && it.conflicted
+                        } == true,
                 ),
             )
         }
 
+    fun markProgressConflict(bookId: Int, sent: LocalPosition) {
+        synchronized(positionLock) {
+            val latest = position(bookId) ?: return
+            if (
+                latest.dirty &&
+                    !latest.conflicted &&
+                    latest.manifestRevision == sent.manifestRevision &&
+                    latest.revision == sent.revision
+            )
+                savePosition(bookId, latest.copy(conflicted = true))
+        }
+    }
+
     fun acknowledge(bookId: Int, sent: LocalPosition, remote: PlaybackState) =
         synchronized(positionLock) {
             val latest = position(bookId) ?: return@synchronized
+            if (
+                latest.manifestRevision != remote.manifestRevision ||
+                    latest.revision > remote.revision
+            )
+                return@synchronized
             savePosition(
                 bookId,
                 latest.copy(
                     revision = remote.revision,
-                    dirty = latest.operationId != sent.operationId,
+                    dirty = latest.dirty && latest.operationId != sent.operationId,
+                    conflicted = false,
                 ),
             )
         }
@@ -117,6 +141,22 @@ class AudioStorage(context: Context, val scope: String) {
         File(bookDir(manifest.book.id), "download").writeText("")
     }
 
+    fun <T> downloadInventory(transform: (StoredDownload) -> T): Pair<List<T>, Long> {
+        var used = 0L
+        val entries =
+            root.listFiles().orEmpty().mapNotNull { dir ->
+                val files = dir.listFiles().orEmpty()
+                val bytes = files.audioBytes()
+                used += bytes
+                val bookId = dir.name.toIntOrNull() ?: return@mapNotNull null
+                if (bytes == 0L && files.none { it.name == "download" }) return@mapNotNull null
+                val manifest =
+                    runCatching { manifest(bookId) }.getOrNull() ?: return@mapNotNull null
+                transform(StoredDownload(manifest, bytes, downloaded(manifest)))
+            }
+        return entries to used
+    }
+
     fun downloads(page: Int, sort: CatalogSort? = null): List<StoredDownload> {
         val candidates =
             storedBooks()
@@ -135,20 +175,14 @@ class AudioStorage(context: Context, val scope: String) {
             .toList()
     }
 
-    fun audioBytes(bookId: Int): Long =
-        bookDir(bookId)
-            .listFiles()
-            .orEmpty()
-            .filter { it.name.endsWith(".audio") || it.name.endsWith(".audio.part") }
+    private fun Array<out File>.audioBytes(): Long =
+        filter { it.name.endsWith(".audio") || it.name.endsWith(".audio.part") }
             .sumOf { it.length() }
 
+    fun audioBytes(bookId: Int): Long = bookDir(bookId).listFiles().orEmpty().audioBytes()
+
     fun usedBytes(): Long =
-        root.listFiles().orEmpty().sumOf { dir ->
-            dir.listFiles()
-                .orEmpty()
-                .filter { it.name.endsWith(".audio") || it.name.endsWith(".audio.part") }
-                .sumOf { it.length() }
-        }
+        root.listFiles().orEmpty().sumOf { it.listFiles().orEmpty().audioBytes() }
 
     fun availableBytes(): Long = root.usableSpace
 

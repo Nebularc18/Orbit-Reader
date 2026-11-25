@@ -44,6 +44,17 @@ class EbookLibraryViewModel(application: Application) : AndroidViewModel(applica
     private val refresh = MutableStateFlow(0)
     private var selection: Job? = null
 
+    init {
+        viewModelScope.launch {
+            app.api.reauthenticationRequired
+                .map { owner in it }
+                .distinctUntilChanged()
+                .drop(1)
+                .filter { !it }
+                .collect { if (!mutable.value.offline) browse() }
+        }
+    }
+
     @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
     val catalog =
         combine(
@@ -131,35 +142,17 @@ class EbookLibraryViewModel(application: Application) : AndroidViewModel(applica
                         withContext(Dispatchers.IO) {
                             checkAccount()
                             if (mutable.value.offline) {
-                                val saved = EbookStorage(app, owner).filesForBook(bookId)
-                                val first = saved.first()
-                                BookDetailsStorage(app, owner)
-                                    .read(bookId)
-                                    ?.copy(files = saved.map { it.file })
-                                    ?: EbookDetail(
-                                        bookId,
-                                        first.title,
-                                        first.authors.map(::EbookAuthor),
-                                        saved.map { it.file },
-                                    )
+                                savedDetail(bookId) ?: throw ApiFailure(404)
                             } else {
                                 try {
                                     app.api.ebookDetail(bookId, owner).also {
                                         runCatching { BookDetailsStorage(app, owner).save(it) }
                                     }
                                 } catch (error: ApiFailure) {
-                                    throw error
+                                    if (error.status != 401) throw error
+                                    savedDetail(bookId) ?: throw error
                                 } catch (error: java.io.IOException) {
-                                    val saved =
-                                        EbookStorage(app, owner).recentlyRead().firstOrNull {
-                                            it.bookId == bookId
-                                        } ?: throw error
-                                    EbookDetail(
-                                        bookId,
-                                        saved.title,
-                                        saved.authors.map(::EbookAuthor),
-                                        listOf(saved.file),
-                                    )
+                                    savedDetail(bookId) ?: throw error
                                 }
                             }
                         }
@@ -202,6 +195,14 @@ class EbookLibraryViewModel(application: Application) : AndroidViewModel(applica
                     }
                 }
             }
+    }
+
+    private fun savedDetail(bookId: Int): EbookDetail? {
+        val saved = EbookStorage(app, owner).filesForBook(bookId)
+        val first = saved.firstOrNull() ?: return null
+        val files = saved.map { it.file }
+        return BookDetailsStorage(app, owner).read(bookId)?.copy(files = files)
+            ?: EbookDetail(bookId, first.title, first.authors.map(::EbookAuthor), files)
     }
 
     fun closeDetail() {

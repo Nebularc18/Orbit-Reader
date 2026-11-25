@@ -12,10 +12,12 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.*
 import app.bookorbit.community.MainActivity
 import app.bookorbit.community.OrbitApplication
+import app.bookorbit.community.PlaybackConflict
 import app.bookorbit.community.data.*
 import app.bookorbit.community.download.enqueueDownload
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.SettableFuture
 import java.io.IOException
 import java.time.Instant
 import kotlinx.coroutines.*
@@ -39,6 +41,7 @@ class PlaybackService : MediaLibraryService() {
     private var manifest: AudioManifest? = null
     private var accountScope: String? = null
     private var saveJob: Job? = null
+    private var positionHandoff: Any? = null
     private val sessionTracker = ListeningSessionTracker()
     private var timer: Job? = null
     private var chapterTimer: PlayerMessage? = null
@@ -318,15 +321,36 @@ class PlaybackService : MediaLibraryService() {
                                 }
 
                                 OPEN_BOOK -> {
-                                    completionJob?.cancel()
-                                    openJob?.cancel()
-                                    openJob =
+                                    val completing = completionJob
+                                    val opening = openJob
+                                    completing?.cancel()
+                                    opening?.cancel()
+                                    val result = SettableFuture.create<SessionResult>()
+                                    val job =
                                         scope.launch {
-                                            open(
-                                                args.getInt("bookId"),
-                                                args.getString("resolution"),
+                                            completing?.join()
+                                            opening?.join()
+                                            val opened =
+                                                open(
+                                                    args.getInt("bookId"),
+                                                    args.getString("resolution"),
+                                                    expectedScope = args.getString("scope"),
+                                                    requireDownload =
+                                                        args.getBoolean("requireDownload"),
+                                                    reuseCurrent = true,
+                                                )
+                                            result.set(
+                                                SessionResult(
+                                                    if (opened) SessionResult.RESULT_SUCCESS
+                                                    else SessionError.ERROR_UNKNOWN
+                                                )
                                             )
                                         }
+                                    openJob = job
+                                    job.invokeOnCompletion {
+                                        result.set(SessionResult(SessionError.ERROR_UNKNOWN))
+                                    }
+                                    return result
                                 }
                                 RELOAD_LISTENING -> {
                                     val owner = accountScope
@@ -475,25 +499,73 @@ class PlaybackService : MediaLibraryService() {
         bookId: Int,
         resolution: String?,
         startPlayback: Boolean = true,
+        expectedScope: String? = null,
+        requireDownload: Boolean = false,
+        reuseCurrent: Boolean = false,
     ): Boolean {
+        val account = app.sessions.read()
+        if (expectedScope != null && account?.scope != expectedScope) return false
+        val sameBook =
+            account != null && accountScope == account.scope && manifest?.book?.id == bookId
+        val resolving =
+            app.progressConflict.value?.let { it.bookId == bookId && it.owner == account?.scope } ==
+                true
         app.playbackMessage.value = null
         app.progressConflict.value = null
+        var handoff: Any? = null
         try {
-            val account = app.sessions.read() ?: throw ApiFailure(401)
+            if (account == null) throw ApiFailure(401)
             val storage = AudioStorage(this, account.scope)
+            val current = manifest
+            if (
+                reuseCurrent &&
+                    startPlayback &&
+                    sameBook &&
+                    current != null &&
+                    resolution == null &&
+                    !resolving &&
+                    player.mediaItemCount > 0
+            ) {
+                val source = player.currentMediaItem?.localConfiguration?.uri
+                val canReuse =
+                    withContext(Dispatchers.IO) {
+                        val downloaded = storage.downloaded(current)
+                        val checkConflict =
+                            networkAvailable(this@PlaybackService) &&
+                                storage.position(bookId)?.conflicted == true
+                        !checkConflict &&
+                            if (source?.scheme == "file") downloaded
+                            else !requireDownload && !downloaded
+                    }
+                if (
+                    canReuse &&
+                        player.playbackState != Player.STATE_IDLE &&
+                        player.playerError == null &&
+                        app.sessions.read()?.scope == account.scope
+                ) {
+                    if (player.playbackState == Player.STATE_ENDED) player.seekTo(0, 0)
+                    player.play()
+                    return true
+                }
+            }
+            if (sameBook && resolution == null) {
+                capture()
+                saveJob?.join()
+            }
             val result =
                 withContext(Dispatchers.IO) {
                     val cached = storage.manifest(bookId)?.takeIf(storage::downloaded)
-                    val loaded = cached ?: app.api.manifest(bookId)
+                    if (requireDownload && cached == null) return@withContext null
+                    val loaded = cached ?: app.api.manifest(bookId, account.scope)
                     val remote =
-                        try {
-                            if (cached != null && !networkAvailable(this@PlaybackService)) null
-                            else app.api.progress(bookId)
-                        } catch (error: ApiFailure) {
-                            throw error
-                        } catch (error: IOException) {
-                            if (cached == null) throw error else null
+                        when {
+                            cached == null -> app.api.progress(bookId, account.scope)
+                            networkAvailable(this@PlaybackService) ->
+                                app.api.cachedPlaybackProgress(bookId, account.scope)
+                            else -> null
                         }
+                    if (resolution != null && remote == null) throw IOException()
+                    currentCoroutineContext().ensureActive()
                     val local =
                         storage.position(bookId)?.takeIf { it.manifestRevision == loaded.revision }
                     val conflict =
@@ -511,7 +583,10 @@ class PlaybackService : MediaLibraryService() {
                                     false,
                                 )
                             local?.dirty == true ->
-                                local.copy(revision = remote?.revision ?: local.revision)
+                                local.copy(
+                                    revision = remote?.revision ?: local.revision,
+                                    conflicted = remote == null && local.conflicted,
+                                )
                             remote != null ->
                                 LocalPosition(
                                     remote.assetId,
@@ -524,20 +599,62 @@ class PlaybackService : MediaLibraryService() {
                             else -> local
                         }
                     storage.saveManifest(loaded)
-                    if (position != null) storage.savePosition(bookId, position)
                     loaded to position
                 }
+                    ?: run {
+                        app.playbackMessage.value =
+                            "Download this audiobook before playing offline."
+                        return false
+                    }
             listeningJob?.join()
             val settings =
                 withContext(Dispatchers.IO) {
                     val listening = ListeningStorage(this@PlaybackService, account.scope)
                     listening.speed(bookId) to listening.intervals()
                 }
+            val options =
+                withContext(Dispatchers.IO) {
+                    PlaybackToolsStorage(this@PlaybackService, account.scope).options()
+                }
             val isDownloaded = withContext(Dispatchers.IO) { storage.downloaded(result.first) }
             if (app.sessions.read()?.scope != account.scope) return false
-            capture()
+            if (requireDownload && !isDownloaded) {
+                app.playbackMessage.value = "Download this audiobook before playing offline."
+                return false
+            }
+            if (!sameBook) capture()
             captureListeningSession(stop = true)
+            if (sameBook) {
+                // Old player callbacks must not capture against the newly adopted server revision.
+                handoff = Any()
+                positionHandoff = handoff
+            }
             saveJob?.join()
+            if (app.sessions.read()?.scope != account.scope) return false
+            val position =
+                result.second?.let { resolved ->
+                    val liveAsset = player.currentMediaItem?.mediaId
+                    if (
+                        sameBook &&
+                            resolution != "server" &&
+                            manifest?.revision == result.first.revision &&
+                            player.playbackState != Player.STATE_IDLE &&
+                            liveAsset != null &&
+                            result.first.assets.any { it.assetId == liveAsset }
+                    ) {
+                        LocalPosition(
+                            assetId = liveAsset,
+                            positionMs = player.currentPosition.coerceAtLeast(0),
+                            capturedAt = Instant.now().toString(),
+                            revision = resolved.revision,
+                            manifestRevision = resolved.manifestRevision,
+                            conflicted = resolved.conflicted,
+                        )
+                    } else resolved
+                }
+            if (position != null) {
+                withContext(Dispatchers.IO) { storage.savePosition(bookId, position) }
+            }
             if (app.sessions.read()?.scope != account.scope) return false
             if (chapterTarget != null) cancelSleepTimer()
             manifest = result.first
@@ -565,19 +682,15 @@ class PlaybackService : MediaLibraryService() {
                 }
             val startIndex =
                 result.first.assets
-                    .indexOfFirst { it.assetId == result.second?.assetId }
+                    .indexOfFirst { it.assetId == position?.assetId }
                     .coerceAtLeast(0)
-            val options =
-                withContext(Dispatchers.IO) {
-                    PlaybackToolsStorage(this@PlaybackService, account.scope).options()
-                }
             listeningPlayer.smartResume(options.smartResume, options.rewindSeconds)
-            var start = AudioSeek(startIndex, result.second?.positionMs ?: 0L)
-            if (resolution == null && result.second != null) {
+            var start = AudioSeek(startIndex, position?.positionMs ?: 0L)
+            if (resolution == null && !sameBook && position != null) {
                 val age =
                     runCatching {
                             java.time.Duration.between(
-                                    Instant.parse(result.second!!.capturedAt),
+                                    Instant.parse(position.capturedAt),
                                     Instant.now(),
                                 )
                                 .toMillis()
@@ -603,11 +716,19 @@ class PlaybackService : MediaLibraryService() {
         } catch (error: CancellationException) {
             throw error
         } catch (error: ApiFailure) {
-            if (error.status == 409) app.progressConflict.value = bookId
+            if (
+                error.status == 409 &&
+                    account != null &&
+                    app.sessions.read()?.scope == account.scope
+            )
+                app.progressConflict.value =
+                    PlaybackConflict(bookId, account.scope, requireDownload)
             app.playbackMessage.value = error.message
         } catch (_: Exception) {
             app.playbackMessage.value =
                 "Could not open this audiobook. Check your server connection."
+        } finally {
+            if (positionHandoff === handoff) positionHandoff = null
         }
         return false
     }
@@ -728,6 +849,7 @@ class PlaybackService : MediaLibraryService() {
 
     private fun capture() {
         captureListeningSession()
+        if (positionHandoff != null) return
         val book = manifest ?: return
         val owner = accountScope ?: return
         val assetId = player.currentMediaItem?.mediaId ?: return

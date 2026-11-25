@@ -6,7 +6,9 @@ import app.bookorbit.community.OrbitApplication
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-data class Appearance(val theme: String = "System", val finish: String = "Brass")
+private const val DEFAULT_THEME = "Dark"
+
+data class Appearance(val theme: String = DEFAULT_THEME, val finish: String = "Brass")
 
 class AppearanceViewModel(application: Application) : AndroidViewModel(application) {
     private val scope = (application as OrbitApplication).sessions.read()?.scope ?: "signed-out"
@@ -28,7 +30,8 @@ class AppearanceStorage(context: android.content.Context, private val scope: Str
 
     fun read(): Appearance =
         Appearance(
-            preferences.getString("$scope/theme", "System")?.takeIf { it in themes } ?: "System",
+            preferences.getString("$scope/theme", DEFAULT_THEME)?.takeIf { it in themes }
+                ?: DEFAULT_THEME,
             preferences.getString("$scope/finish", "Brass")?.takeIf { it in finishes } ?: "Brass",
         )
 

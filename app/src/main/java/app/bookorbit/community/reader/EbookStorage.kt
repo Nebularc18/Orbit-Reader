@@ -139,20 +139,23 @@ class EbookStorage(context: Context, scope: String) {
             read(File(dir(fileId), "book.json"))?.let { wireJson.decodeFromString(it) }
         }
 
+    private fun savedBooks(): Sequence<SavedEbook> =
+        root
+            .listFiles()
+            .orEmpty()
+            .asSequence()
+            .filter { it.isDirectory }
+            .sortedBy { it.name.toIntOrNull() ?: Int.MAX_VALUE }
+            .mapNotNull {
+                it.name.toIntOrNull()?.let { id -> runCatching { book(id) }.getOrNull() }
+            }
+            .filter { ready(it.file) }
+
     fun books(page: Int): List<SavedEbook> =
-        synchronized(lock) {
-            root
-                .listFiles()
-                .orEmpty()
-                .asSequence()
-                .filter { it.isDirectory }
-                .sortedBy { it.name.toIntOrNull() ?: Int.MAX_VALUE }
-                .mapNotNull { it.name.toIntOrNull()?.let { id -> book(id) } }
-                .filter { ready(it.file) }
-                .drop((page - 1).coerceAtLeast(0) * 30)
-                .take(30)
-                .toList()
-        }
+        synchronized(lock) { savedBooks().drop((page - 1).coerceAtLeast(0) * 30).take(30).toList() }
+
+    fun <T> savedEntries(convert: (SavedEbook, Long) -> T): List<T> =
+        synchronized(lock) { savedBooks().map { convert(it, content(it.file).length()) }.toList() }
 
     fun filesForBook(bookId: Int): List<SavedEbook> =
         synchronized(lock) {

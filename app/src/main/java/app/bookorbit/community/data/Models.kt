@@ -134,6 +134,7 @@ data class LocalPosition(
     val manifestRevision: String,
     val dirty: Boolean = true,
     val operationId: String = java.util.UUID.randomUUID().toString(),
+    val conflicted: Boolean = false,
 ) {
     fun write() =
         ProgressWrite(assetId, positionMs, capturedAt, operationId, revision, manifestRevision)
@@ -396,3 +397,21 @@ data class ListeningSessionWrite(
     val sessionType: String,
     val source: String,
 )
+
+@Serializable
+data class ReadingHistoryItem(
+    val id: Int,
+    val bookId: Int? = null,
+    val title: String? = null,
+    val authors: List<String> = emptyList(),
+    val format: String? = null,
+    val coverVersion: String? = null,
+    val endedOn: String? = null,
+    val readNumber: Int? = null,
+)
+
+@Serializable data class ReadingHistoryPage(val items: List<ReadingHistoryItem>, val total: Int)
+
+@Serializable data class ReadingHistoryYear(val year: Int)
+
+@Serializable data class ReadingHistorySummary(val years: List<ReadingHistoryYear> = emptyList())

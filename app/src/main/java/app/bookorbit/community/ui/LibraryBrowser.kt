@@ -36,6 +36,7 @@ fun LibraryBrowser(
     onRead: (Int) -> Unit,
     onListen: (Int) -> Unit,
     onActivity: () -> Unit,
+    onSignIn: (() -> Unit)? = null,
 ) {
     val model: LibraryBrowserViewModel = viewModel(key = "browser-${account.scope}")
     val state by model.state.collectAsStateWithLifecycle()
@@ -60,6 +61,8 @@ fun LibraryBrowser(
                 }
             },
         )
+        if (onSignIn != null)
+            Box(Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) { OfflineSignIn(onSignIn) }
         if (state.group == null) {
             androidx.compose.foundation.lazy.LazyRow(
                 contentPadding = PaddingValues(horizontal = 20.dp),

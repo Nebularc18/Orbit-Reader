@@ -30,6 +30,7 @@ import androidx.paging.compose.itemKey
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import app.bookorbit.community.OrbitApplication
+import app.bookorbit.community.data.EbookFile
 import app.bookorbit.community.data.Session
 import app.bookorbit.community.reader.EpubReaderActivity
 import app.bookorbit.community.reader.PageReaderActivity
@@ -72,19 +73,7 @@ fun EbookLibrary(
                 (state.readyToRead || current?.state == WorkInfo.State.SUCCEEDED) &&
                 app.sessions.read()?.scope == account.scope
         ) {
-            app.startActivity(
-                Intent(
-                        app,
-                        if (preparing.file.format?.lowercase() in listOf("epub", "kepub"))
-                            EpubReaderActivity::class.java
-                        else PageReaderActivity::class.java,
-                    )
-                    .apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        putExtra("scope", account.scope)
-                        putExtra("fileId", preparing.file.id)
-                    }
-            )
+            openSavedEbook(app, account.scope, preparing.file)
             model.opened()
         }
     }
@@ -254,4 +243,21 @@ fun EbookLibrary(
                 }
             }
         }
+}
+
+internal fun openSavedEbook(app: OrbitApplication, owner: String, file: EbookFile) {
+    if (app.sessions.read()?.scope != owner) return
+    app.startActivity(
+        Intent(
+                app,
+                if (file.format?.lowercase() in listOf("epub", "kepub"))
+                    EpubReaderActivity::class.java
+                else PageReaderActivity::class.java,
+            )
+            .apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                putExtra("scope", owner)
+                putExtra("fileId", file.id)
+            }
+    )
 }

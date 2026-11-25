@@ -8,6 +8,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 
+data class PlaybackConflict(val bookId: Int, val owner: String, val requireDownload: Boolean)
+
 class OrbitApplication : Application() {
     val sessions by lazy { EncryptedSessionStore(this) }
     val oidcStore by lazy { app.bookorbit.community.data.OidcStore(this) }
@@ -17,7 +19,7 @@ class OrbitApplication : Application() {
     }
     val currentManifest = MutableStateFlow<AudioManifest?>(null)
     val playbackMessage = MutableStateFlow<String?>(null)
-    val progressConflict = MutableStateFlow<Int?>(null)
+    val progressConflict = MutableStateFlow<PlaybackConflict?>(null)
     val sleepAtChapterEnd = MutableStateFlow(false)
     val sleepMinutes = MutableStateFlow(0)
     val offlineBudget by lazy { app.bookorbit.community.download.OfflineBudget(this) }

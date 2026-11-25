@@ -27,17 +27,16 @@ data class LibraryState(
     val busy: Boolean = false,
     val error: String? = null,
     val query: String = "",
-    val offline: Boolean = false,
     val sort: CatalogSort = CatalogSort.TITLE_ASC,
     val readFilter: CatalogReadFilter = CatalogReadFilter.ALL,
     val selected: AudioManifest? = null,
+    val selectedSavedOnly: Boolean = false,
     val details: EbookDetail? = null,
     val detailsBusy: Boolean = false,
     val detailsError: String? = null,
     val downloaded: Boolean = false,
     val wifiOnly: Boolean = true,
-    val usedBytes: Long = 0,
-    val availableBytes: Long = 0,
+    val downloadsRevision: Int = 0,
     val selectedBytes: Long = 0,
 )
 
@@ -66,9 +65,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     val catalog =
         combine(
                 mutable
-                    .map {
-                        CatalogKey(it.session?.scope, it.query, it.offline, it.sort, it.readFilter)
-                    }
+                    .map { CatalogKey(it.session?.scope, it.query, it.sort, it.readFilter) }
                     .distinctUntilChanged(),
                 refresh,
             ) { key, generation ->
@@ -83,32 +80,13 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                             withContext(Dispatchers.IO) {
                                 if (app.sessions.read()?.scope != owner) throw ApiFailure(401)
                                 val result =
-                                    if (!key.offline)
-                                        app.api.books(
-                                            page,
-                                            key.query,
-                                            owner = owner,
-                                            sort = key.sort,
-                                            readFilter = key.readFilter,
-                                        )
-                                    else {
-                                        val downloads =
-                                            AudioStorage(app, owner).downloads(page, key.sort)
-                                        BooksPage(
-                                            downloads.map {
-                                                BookCard(
-                                                    it.manifest.book.id,
-                                                    it.manifest.book.title,
-                                                    it.manifest.book.authors,
-                                                    localDownload =
-                                                        LocalDownloadStatus(it.bytes, it.complete),
-                                                )
-                                            },
-                                            -1,
-                                            page,
-                                            30,
-                                        )
-                                    }
+                                    app.api.books(
+                                        page,
+                                        key.query,
+                                        owner = owner,
+                                        sort = key.sort,
+                                        readFilter = key.readFilter,
+                                    )
                                 if (app.sessions.read()?.scope != owner) throw ApiFailure(401)
                                 result
                             }
@@ -364,29 +342,13 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
 
     fun sort(value: CatalogSort) {
         val snapshot = mutable.value
-        if (snapshot.offline && !value.local) return
         val owner = snapshot.session?.scope ?: return
-        CatalogSortStorage(app, owner).save("audio", snapshot.offline, value)
+        CatalogSortStorage(app, owner).save("audio", false, value)
         mutable.update { it.copy(sort = value, error = null) }
     }
 
     fun search(value: String) {
         mutable.update { it.copy(query = value, error = null) }
-    }
-
-    fun setOffline(value: Boolean) {
-        mutable.update {
-            it.copy(
-                offline = value,
-                query = "",
-                error = null,
-                sort =
-                    it.session?.let { account ->
-                        CatalogSortStorage(app, account.scope).read("audio", value)
-                    } ?: CatalogSort.TITLE_ASC,
-            )
-        }
-        refreshDownloaded()
     }
 
     fun browse() {
@@ -395,7 +357,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         refreshDownloaded()
     }
 
-    fun select(bookId: Int) {
+    fun select(bookId: Int, savedOnly: Boolean = false) {
         detailJob?.cancel()
         val account = mutable.value.session ?: return
         detailJob =
@@ -416,13 +378,17 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                         withContext(Dispatchers.IO) {
                             if (app.sessions.read()?.scope != account.scope) throw ApiFailure(401)
                             val manifest =
-                                try {
-                                    app.api.manifest(bookId, account.scope)
-                                } catch (error: ApiFailure) {
-                                    throw error
-                                } catch (error: IOException) {
-                                    storage.manifest(bookId) ?: throw error
-                                }
+                                if (savedOnly) storage.manifest(bookId) ?: throw ApiFailure(404)
+                                else
+                                    try {
+                                        app.api.manifest(bookId, account.scope)
+                                    } catch (error: ApiFailure) {
+                                        if (error.status != 401) throw error
+                                        storage.manifest(bookId)?.takeIf(storage::downloaded)
+                                            ?: throw error
+                                    } catch (error: IOException) {
+                                        storage.manifest(bookId) ?: throw error
+                                    }
                             Triple(
                                 manifest,
                                 storage.downloaded(manifest),
@@ -437,6 +403,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                     mutable.update {
                         it.copy(
                             selected = loaded.first,
+                            selectedSavedOnly = savedOnly,
                             details = cachedDetails,
                             downloaded = loaded.second,
                             selectedBytes = loaded.third,
@@ -534,27 +501,14 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     private suspend fun refreshDownloads() {
         val snapshot = mutable.value
         val account = snapshot.session ?: return
-        if (!snapshot.offline && snapshot.selected == null) return
+        val selected = snapshot.selected ?: return
         withContext(Dispatchers.IO) {
             val storage = AudioStorage(app, account.scope)
-            val used = storage.usedBytes()
-            val available = storage.availableBytes()
-            val complete = snapshot.selected?.let(storage::downloaded) ?: false
-            val selectedBytes = snapshot.selected?.let { storage.audioBytes(it.book.id) } ?: 0
+            val complete = storage.downloaded(selected)
+            val selectedBytes = storage.audioBytes(selected.book.id)
             mutable.update {
-                if (
-                    it.session?.scope != account.scope ||
-                        it.offline != snapshot.offline ||
-                        it.selected != snapshot.selected
-                )
-                    it
-                else
-                    it.copy(
-                        usedBytes = used,
-                        availableBytes = available,
-                        downloaded = complete,
-                        selectedBytes = selectedBytes,
-                    )
+                if (it.session?.scope != account.scope || it.selected != snapshot.selected) it
+                else it.copy(downloaded = complete, selectedBytes = selectedBytes)
             }
         }
     }
@@ -579,10 +533,14 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                 }
                 mutable.update {
                     if (it.session?.scope == account.scope)
-                        it.copy(downloaded = false, selected = null, busy = false)
+                        it.copy(
+                            downloaded = false,
+                            selected = null,
+                            busy = false,
+                            downloadsRevision = it.downloadsRevision + 1,
+                        )
                     else it
                 }
-                if (snapshot.offline && mutable.value.session?.scope == account.scope) browse()
             } catch (error: CancellationException) {
                 throw error
             } catch (_: Exception) {
@@ -606,7 +564,6 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
 private data class CatalogKey(
     val owner: String?,
     val query: String,
-    val offline: Boolean,
     val sort: CatalogSort,
     val readFilter: CatalogReadFilter,
 )

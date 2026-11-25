@@ -1,6 +1,7 @@
 package app.bookorbit.community.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -14,9 +15,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -37,15 +44,17 @@ fun Dashboard(
     modifier: Modifier = Modifier,
     onListen: (Int) -> Unit,
     onRead: (Int) -> Unit,
+    onResume: (Int) -> Unit,
+    onDownloads: () -> Unit,
+    onSignIn: (() -> Unit)? = null,
+    playbackMessage: String? = null,
     opening: Boolean = false,
     openError: String? = null,
     onAppearance: () -> Unit = {},
     onActivity: () -> Unit = {},
     onLibrary: () -> Unit = {},
-    onServers: () -> Unit = {},
     onNotebook: () -> Unit = {},
-    onRequests: () -> Unit = {},
-    onUploads: () -> Unit = {},
+    onHistory: () -> Unit = {},
 ) {
     val model: DashboardViewModel = viewModel(key = "dashboard-${account.scope}")
     val state by model.state.collectAsStateWithLifecycle()
@@ -58,69 +67,20 @@ fun Dashboard(
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) model.refresh()
         onDispose { lifecycle.removeObserver(observer) }
     }
-    var showMore by remember { mutableStateOf(false) }
     val featuredRow =
         state.rows.firstOrNull { it.section != DashboardSection.SERIES && it.books.isNotEmpty() }
     val featured = featuredRow?.books?.firstOrNull()
     LazyColumn(
         modifier.fillMaxSize(),
-        contentPadding = PaddingValues(top = 16.dp, bottom = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(28.dp),
+        contentPadding = PaddingValues(top = 8.dp, bottom = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         item {
             Column(
-                Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            "Orbit Reader",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        TextButton(onClick = onServers, contentPadding = PaddingValues(0.dp)) {
-                            Text(
-                                serverLabel(account),
-                                modifier = Modifier.weight(1f, fill = false),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.labelMedium,
-                            )
-                            Icon(Icons.Rounded.ExpandMore, null, Modifier.size(16.dp))
-                        }
-                    }
-                    IconButton(onClick = model::refresh, enabled = !state.loading) {
-                        Icon(Icons.Rounded.Refresh, "Refresh dashboard", Modifier.size(22.dp))
-                    }
-                    IconButton(onClick = onAppearance) {
-                        Icon(Icons.Rounded.Tune, "Appearance and account", Modifier.size(22.dp))
-                    }
-                    Box {
-                        IconButton(onClick = { showMore = true }) {
-                            Icon(Icons.Rounded.MoreVert, "More library tools")
-                        }
-                        DropdownMenu(expanded = showMore, onDismissRequest = { showMore = false }) {
-                            listOf(
-                                    Triple("Activity", Icons.Rounded.Insights, onActivity),
-                                    Triple("Notebook", Icons.Rounded.Bookmarks, onNotebook),
-                                    Triple("Book requests", Icons.Rounded.Add, onRequests),
-                                    Triple("Upload a book", Icons.Rounded.Upload, onUploads),
-                                )
-                                .forEach { (label, icon, action) ->
-                                    DropdownMenuItem(
-                                        text = { Text(label) },
-                                        leadingIcon = { Icon(icon, null) },
-                                        onClick = {
-                                            showMore = false
-                                            action()
-                                        },
-                                    )
-                                }
-                        }
-                    }
-                }
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     val greeting =
                         when (LocalTime.now().hour) {
                             in 5..11 -> "Good morning"
@@ -134,17 +94,21 @@ fun Dashboard(
                             .substringBefore(' ')
                     Text(
                         if (name.isBlank()) greeting else "$greeting, $name",
-                        modifier = Modifier.semantics { heading() },
-                        style = MaterialTheme.typography.headlineMedium,
+                        modifier = Modifier.weight(1f).semantics { heading() },
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontFamily = FontFamily.SansSerif,
+                        fontWeight = FontWeight.Bold,
                     )
-                    Text(
-                        "Pick up where you left off.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    IconButton(onClick = model::refresh) {
+                        Icon(Icons.Rounded.Refresh, "Refresh home")
+                    }
+                    IconButton(onClick = onAppearance) {
+                        Icon(Icons.Rounded.Tune, "Appearance and account")
+                    }
                 }
+                if (onSignIn != null) OfflineSignIn(onSignIn, onDownloads)
             }
-            openError?.let {
+            (playbackMessage ?: openError)?.let {
                 Text(
                     it,
                     Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
@@ -157,104 +121,25 @@ fun Dashboard(
         featured?.let { book ->
             item(key = "featured") {
                 val audio = featuredRow.section == DashboardSection.LISTENING
-                Surface(
-                    modifier = Modifier.padding(horizontal = 24.dp).fillMaxWidth(),
-                    shape = RoundedCornerShape(24.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                Box(
+                    Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Column(
-                        Modifier.padding(20.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp),
-                    ) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            BookCover(
-                                app,
-                                account,
-                                book.id,
-                                book.coverVersion,
-                                Modifier.size(100.dp, 144.dp).clickable {
-                                    if (audio) onListen(book.id) else onRead(book.id)
-                                },
-                                ebook = !audio,
-                            )
-                            Column(
-                                Modifier.weight(1f).heightIn(min = 144.dp),
-                                verticalArrangement = Arrangement.spacedBy(7.dp),
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                                ) {
-                                    Icon(
-                                        if (audio) Icons.Rounded.Headphones
-                                        else Icons.Rounded.AutoStories,
-                                        null,
-                                        Modifier.size(13.dp),
-                                        tint = MaterialTheme.colorScheme.primary,
-                                    )
-                                    Text(
-                                        if (audio) "Continue listening" else "Continue reading",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                Text(
-                                    book.title ?: "Untitled",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontFamily = FontFamily.Serif,
-                                    maxLines = 3,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    book.authors.joinToString(", "),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Spacer(Modifier.weight(1f))
-                                book.readingProgress
-                                    ?.takeIf { it > 0 }
-                                    ?.let { progress ->
-                                        Text(
-                                            "${progress.toInt().coerceIn(0, 100)}% complete",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                        CoverProgress(progress)
-                                    }
-                            }
-                        }
-                        Button(
-                            onClick = { if (audio) onListen(book.id) else onRead(book.id) },
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp),
-                        ) {
-                            Icon(
-                                if (audio) Icons.Rounded.Headphones
-                                else Icons.AutoMirrored.Rounded.MenuBook,
-                                null,
-                                Modifier.size(18.dp),
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(if (audio) "Open audiobook" else "Continue reading")
-                        }
-                    }
+                    ResumeCard(
+                        app,
+                        account,
+                        book,
+                        audio,
+                        onCover = { if (audio) onListen(book.id) else onRead(book.id) },
+                        onResume = { if (audio) onResume(book.id) else onRead(book.id) },
+                    )
                 }
             }
         }
-        if (state.goal != null || state.streak != null)
-            item(key = "reading-activity") {
-                ReadingActivityCard(
-                    state.goal,
-                    state.streak,
-                    Modifier.padding(horizontal = 24.dp).clickable(onClick = onActivity),
-                )
-            }
         if (!state.loading && state.rows.all { it.books.isEmpty() })
             item {
                 Surface(
-                    Modifier.padding(horizontal = 24.dp).fillMaxWidth(),
+                    Modifier.padding(horizontal = 20.dp).fillMaxWidth(),
                     shape = RoundedCornerShape(24.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerLow,
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
@@ -296,7 +181,7 @@ fun Dashboard(
             if (books.isNotEmpty() || row.error)
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(
-                        Modifier.padding(horizontal = 24.dp),
+                        Modifier.padding(horizontal = 20.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
@@ -312,19 +197,25 @@ fun Dashboard(
                         )
                         Text(
                             row.section.title,
-                            modifier = Modifier.weight(1f).semantics { heading() },
-                            style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.semantics { heading() },
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontStyle = FontStyle.Italic,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        HorizontalDivider(
+                            Modifier.weight(1f),
+                            color = MaterialTheme.colorScheme.outlineVariant,
                         )
                     }
                     if (row.error)
                         Text(
                             "Could not refresh. Showing activity saved on this phone.",
-                            Modifier.padding(horizontal = 24.dp),
+                            Modifier.padding(horizontal = 20.dp),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     LazyRow(
-                        contentPadding = PaddingValues(horizontal = 24.dp),
+                        contentPadding = PaddingValues(horizontal = 20.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         items(books, key = { it.id }) { book ->
@@ -353,7 +244,7 @@ fun Dashboard(
                                     account,
                                     book.id,
                                     book.coverVersion,
-                                    Modifier.size(136.dp, 180.dp),
+                                    Modifier.size(136.dp, if (audio) 136.dp else 180.dp),
                                     ebook = !audio,
                                 )
                                 Text(
@@ -393,6 +284,164 @@ fun Dashboard(
                         }
                     }
                 }
+        }
+        item(key = "reading-tools") {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = onNotebook,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    shape = MaterialTheme.shapes.medium,
+                    contentPadding = PaddingValues(horizontal = 10.dp),
+                ) {
+                    Icon(Icons.Rounded.Bookmarks, null, Modifier.size(17.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Notebook")
+                }
+                FilledTonalButton(
+                    onClick = onHistory,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    shape = MaterialTheme.shapes.medium,
+                    contentPadding = PaddingValues(horizontal = 10.dp),
+                ) {
+                    Icon(Icons.Rounded.History, null, Modifier.size(17.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("History")
+                }
+            }
+        }
+        if (state.goal != null || state.streak != null)
+            item(key = "reading-activity") {
+                ReadingActivityCard(
+                    state.goal,
+                    state.streak,
+                    Modifier.padding(horizontal = 20.dp).clickable(onClick = onActivity),
+                )
+            }
+    }
+}
+
+@Composable
+private fun ResumeCard(
+    app: OrbitApplication,
+    account: Session,
+    book: BookCard,
+    audio: Boolean,
+    onCover: () -> Unit,
+    onResume: () -> Unit,
+) {
+    var coverColor by
+        remember(account.scope, book.id, book.coverVersion) { mutableStateOf<Color?>(null) }
+    val colors = MaterialTheme.colorScheme
+    val accent = coverColor ?: colors.primary
+    val dark = colors.surface.luminance() < .5f
+    val tinted =
+        accent.copy(alpha = if (dark) .34f else .19f).compositeOver(colors.surfaceContainer)
+    Surface(
+        modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        color = colors.surfaceContainerLow,
+        border = BorderStroke(1.dp, colors.outlineVariant),
+    ) {
+        Box {
+            Canvas(Modifier.matchParentSize()) {
+                drawRect(Brush.verticalGradient(listOf(tinted, colors.surfaceContainerLow)))
+            }
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    BookCover(
+                        app,
+                        account,
+                        book.id,
+                        book.coverVersion,
+                        Modifier.size(width = 110.dp, height = if (audio) 110.dp else 146.dp)
+                            .clickable(
+                                role = Role.Button,
+                                onClickLabel =
+                                    if (audio) "Open audiobook details" else "Open ebook",
+                                onClick = onCover,
+                            ),
+                        ebook = !audio,
+                        onColor = { coverColor = it },
+                    )
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            if (audio) "Listening" else "Reading",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.primary,
+                        )
+                        Text(
+                            book.title ?: "Untitled",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontFamily = FontFamily.SansSerif,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (book.authors.isNotEmpty())
+                            Text(
+                                book.authors.joinToString(", "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        book.readingProgress
+                            ?.takeIf { it.isFinite() && it > 0 }
+                            ?.let { progress ->
+                                CoverProgress(progress, Modifier.padding(top = 4.dp))
+                                Text(
+                                    "${progress.toInt().coerceIn(0, 100)}% complete",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = colors.onSurfaceVariant,
+                                )
+                            }
+                    }
+                }
+                FilledTonalButton(
+                    onClick = onResume,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    shape = MaterialTheme.shapes.large,
+                ) {
+                    Icon(
+                        if (audio) Icons.Rounded.PlayArrow else Icons.AutoMirrored.Rounded.MenuBook,
+                        null,
+                        Modifier.size(20.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (audio) "Resume listening" else "Continue reading")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun OfflineSignIn(onSignIn: () -> Unit, onDownloads: (() -> Unit)? = null) {
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 14.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                "Saved books are available offline",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            if (onDownloads != null) {
+                IconButton(onClick = onDownloads) { Icon(Icons.Rounded.Download, "View downloads") }
+            }
+            TextButton(onClick = onSignIn) { Text("Sign in") }
         }
     }
 }

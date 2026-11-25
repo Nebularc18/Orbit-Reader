@@ -1,9 +1,13 @@
 package app.bookorbit.community.data
 
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
 import okhttp3.Request
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -32,6 +36,21 @@ class OrbitApiTest {
     @After
     fun cleanup() {
         server.shutdown()
+    }
+
+    @Test
+    fun `cached playback treats a progress service outage as unavailable`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(503))
+        assertNull(api.cachedPlaybackProgress(42, store.read()!!.scope))
+        assertEquals("/books/api/v1/audiobooks/42/playback-state", server.takeRequest().path)
+    }
+
+    @Test
+    fun `cached playback can proceed when the progress server does not respond`() = runBlocking {
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+        val result = withTimeout(6_000) { api.cachedPlaybackProgress(42, store.read()!!.scope) }
+        assertNull(result)
+        assertNotNull(server.takeRequest(1, TimeUnit.SECONDS))
     }
 
     @Test
@@ -562,6 +581,30 @@ class OrbitApiTest {
         )
         assertEquals("Bearer new-access", server.takeRequest().getHeader("Authorization"))
         assertEquals("new-refresh", store.read()!!.refreshToken)
+    }
+
+    @Test
+    fun `a rejected refresh leaves the local account active until sign in succeeds`() {
+        val before = store.read()!!
+        repeat(3) { server.enqueue(MockResponse().setResponseCode(401)) }
+        assertEquals(
+            401,
+            assertThrows(ApiFailure::class.java) { api.progress(5, before.scope) }.status,
+        )
+        assertEquals(before, store.read())
+        assertEquals(setOf(before.scope), api.reauthenticationRequired.value)
+        assertThrows(ApiFailure::class.java) { api.progress(5, before.scope) }
+        assertEquals(3, server.requestCount)
+
+        server.enqueue(
+            MockResponse()
+                .setBody(
+                    """{"accessToken":"new-access","refreshToken":"new-refresh","user":{"id":7,"username":"reader"}}"""
+                )
+        )
+        api.login(before.server, "reader", "test-password")
+        assertTrue(api.reauthenticationRequired.value.isEmpty())
+        assertEquals(before.scope, store.read()!!.scope)
     }
 
     @Test
