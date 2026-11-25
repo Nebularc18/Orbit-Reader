@@ -94,7 +94,7 @@ fun BookSheet(
             item {
                 Button(
                     onClick = onPlay,
-                    enabled = controller != null,
+                    enabled = controller != null && (!state.selectedSavedOnly || complete),
                     modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
                 ) {
                     Text("Listen now")
@@ -167,7 +167,7 @@ fun BookSheet(
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
-            if (complete || state.selectedBytes > 0 || state.offline)
+            if (complete || state.selectedBytes > 0 || state.selectedSavedOnly)
                 item {
                     Text(
                         if (complete) "Available offline" else "Download incomplete",

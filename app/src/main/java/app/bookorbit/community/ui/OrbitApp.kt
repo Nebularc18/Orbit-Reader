@@ -34,6 +34,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import androidx.paging.compose.collectAsLazyPagingItems
 import androidx.work.WorkManager
 import app.bookorbit.community.OrbitApplication
@@ -42,6 +43,16 @@ import app.bookorbit.community.playback.*
 import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
+import kotlin.coroutines.resume
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+
+private class AudioResumeRequest(
+    val id: Int,
+    val owner: String,
+    val requireDownload: Boolean,
+    val resolution: String?,
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,7 +64,6 @@ fun OrbitApp(
     consumeWidget: () -> Unit = {},
 ) {
     val state by model.state.collectAsStateWithLifecycle()
-    val catalog = model.catalog.collectAsLazyPagingItems()
     val work by
         remember(state.session?.scope) {
                 WorkManager.getInstance(app)
@@ -61,30 +71,44 @@ fun OrbitApp(
             }
             .collectAsStateWithLifecycle(initialValue = emptyList())
     LaunchedEffect(work) { model.refreshDownloaded() }
-    LaunchedEffect(state.offline, work.map { it.id to it.state }) {
-        if (state.offline) catalog.refresh()
-    }
     val current by app.currentManifest.collectAsStateWithLifecycle()
     val message by app.playbackMessage.collectAsStateWithLifecycle()
     val conflict by app.progressConflict.collectAsStateWithLifecycle()
     var showPlayer by rememberSaveable { mutableStateOf(false) }
-    var showDashboard by rememberSaveable(state.session?.scope) { mutableStateOf(true) }
+    var refreshDownloads by remember { mutableIntStateOf(0) }
+    val expiredScopes by app.api.reauthenticationRequired.collectAsStateWithLifecycle()
+    val needsSignIn = state.session?.scope in expiredScopes
+    var signingInAgain by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
+    LaunchedEffect(needsSignIn) { if (!needsSignIn) signingInAgain = false }
+    var queuedAudio by remember(state.session?.scope) { mutableStateOf<AudioResumeRequest?>(null) }
+    fun resumeAudio(id: Int, requireDownload: Boolean = false, resolution: String? = null) {
+        val owner = state.session?.scope ?: return
+        queuedAudio = AudioResumeRequest(id, owner, requireDownload, resolution)
+    }
+    LaunchedEffect(controller, queuedAudio) {
+        val request = queuedAudio ?: return@LaunchedEffect
+        if (controller == null) {
+            delay(8_000)
+            if (queuedAudio === request) {
+                queuedAudio = null
+                app.playbackMessage.value = "The player could not connect. Try again."
+            }
+            return@LaunchedEffect
+        }
+        if (app.sessions.read()?.scope != request.owner) return@LaunchedEffect
+        val opened = openBook(controller, request)
+        if (queuedAudio === request) {
+            queuedAudio = null
+            if (opened && app.sessions.read()?.scope == request.owner) showPlayer = true
+        }
+    }
+    var selectedTab by rememberSaveable(state.session?.scope) { mutableStateOf(OrbitTab.HOME) }
     var pendingEbook by remember { mutableStateOf<Int?>(null) }
-    var showLibrary by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
     var showActivity by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
+    var showHistory by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
     var showNotebook by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
     var showRequests by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
     var showUploads by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
-    BackHandler(showLibrary || showActivity || showNotebook || showRequests || showUploads) {
-        if (showUploads) showUploads = false
-        else if (showRequests) showRequests = false
-        else if (showNotebook) showNotebook = false
-        else if (showActivity) showActivity = false
-        else {
-            showLibrary = false
-            showDashboard = true
-        }
-    }
     var showEbooks by rememberSaveable(state.session?.scope) { mutableStateOf(false) }
     var signOut by remember { mutableStateOf(false) }
     val notificationPermission =
@@ -100,22 +124,48 @@ fun OrbitApp(
         showServers = false
         pendingEbook = null
     }
-    val selectedTab =
-        if (showLibrary) 4
-        else if (showDashboard) 0 else if (showEbooks) 2 else if (state.offline) 3 else 1
-    val selectTab: (Int) -> Unit = { tab ->
-        showLibrary = tab == 4
+    fun selectTab(tab: OrbitTab) {
+        selectedTab = tab
         showActivity = false
         showNotebook = false
+        showHistory = false
         showRequests = false
         showUploads = false
-        showDashboard = tab == 0
-        showEbooks = tab == 2
-        if (tab == 1 || tab == 3) model.setOffline(tab == 3)
+    }
+    fun cancelSignIn() {
+        signingInAgain = false
+        model.addServer(false)
+    }
+    BackHandler(signingInAgain || (state.addingServer && state.session != null)) {
+        if (!state.busy) cancelSignIn()
+    }
+    BackHandler(
+        !signingInAgain &&
+            !state.addingServer &&
+            (selectedTab != OrbitTab.HOME ||
+                showActivity ||
+                showHistory ||
+                showNotebook ||
+                showRequests ||
+                showUploads)
+    ) {
+        if (showUploads) showUploads = false
+        else if (showRequests) showRequests = false
+        else if (showNotebook) showNotebook = false
+        else if (showHistory) showHistory = false
+        else if (showActivity) showActivity = false else selectTab(OrbitTab.HOME)
     }
     LaunchedEffect(widgetTab, state.session?.scope) {
         if (widgetTab != null && state.session != null) {
-            selectTab(widgetTab)
+            when (widgetTab) {
+                1,
+                2 -> {
+                    showEbooks = widgetTab == 2
+                    selectTab(OrbitTab.SEARCH)
+                }
+                3 -> selectTab(OrbitTab.DOWNLOADS)
+                else -> selectTab(OrbitTab.HOME)
+            }
             consumeWidget()
         }
     }
@@ -139,14 +189,15 @@ fun OrbitApp(
     }
     OrbitTheme(appearance) {
         AmbientBackground(Modifier.fillMaxSize()) {
-            if (state.session == null || state.addingServer)
+            if (state.session == null || state.addingServer || signingInAgain)
                 SignIn(
                     state.busy,
                     state.error,
                     { server, username, password ->
                         model.login(server, username, password, controller)
                     },
-                    if (state.session != null) ({ model.addServer(false) }) else null,
+                    if (state.session != null) ::cancelSignIn else null,
+                    existing = state.session.takeIf { signingInAgain },
                     options = state.loginOptions,
                     optionsAddress = state.optionsAddress,
                     onOptions = model::loadLoginOptions,
@@ -158,55 +209,35 @@ fun OrbitApp(
             else
                 AdaptiveAppScaffold(
                     selectedTab = selectedTab,
-                    onTab = selectTab,
+                    onTab = ::selectTab,
                     topBar = {
                         if (
-                            !showDashboard &&
-                                !showLibrary &&
-                                !showActivity &&
+                            !showActivity &&
                                 !showNotebook &&
+                                !showHistory &&
                                 !showRequests &&
-                                !showUploads
-                        )
+                                !showUploads &&
+                                (selectedTab == OrbitTab.SEARCH ||
+                                    selectedTab == OrbitTab.DOWNLOADS)
+                        ) {
                             TopAppBar(
                                 colors =
                                     TopAppBarDefaults.topAppBarColors(
                                         containerColor = Color.Transparent
                                     ),
-                                title = {
-                                    Column {
-                                        Text(
-                                            if (showEbooks) "Reading"
-                                            else if (state.offline) "Downloads" else "Listening",
-                                            style = MaterialTheme.typography.headlineSmall,
-                                        )
-                                        Text(
-                                            if (showEbooks) "Books & comics"
-                                            else if (state.offline) "Your offline library"
-                                            else "Your audiobook library",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                },
+                                title = { Text(selectedTab.label) },
                                 actions = {
-                                    if (!showEbooks)
-                                        IconButton(onClick = { model.browse() }) {
-                                            Icon(
-                                                Icons.Rounded.Refresh,
-                                                "Refresh",
-                                                Modifier.size(20.dp),
-                                            )
+                                    if (selectedTab == OrbitTab.DOWNLOADS)
+                                        IconButton(onClick = { refreshDownloads++ }) {
+                                            Icon(Icons.Rounded.Refresh, "Refresh downloads")
                                         }
-                                    IconButton(onClick = { showAppearance = true }) {
-                                        Icon(
-                                            Icons.Rounded.Tune,
-                                            "Appearance and account",
-                                            Modifier.size(20.dp),
-                                        )
-                                    }
+                                    else if (!showEbooks)
+                                        IconButton(onClick = model::browse) {
+                                            Icon(Icons.Rounded.Refresh, "Refresh audiobooks")
+                                        }
                                 },
                             )
+                        }
                     },
                     bottomBar = {
                         Column(Modifier.navigationBarsPadding()) {
@@ -215,7 +246,7 @@ fun OrbitApp(
                                     showPlayer = true
                                 }
                             }
-                            if (!rail) OrbitTabBar(selectedTab, selectTab)
+                            if (!rail) OrbitTabBar(selectedTab, ::selectTab)
                         }
                     },
                 ) { padding ->
@@ -224,9 +255,8 @@ fun OrbitApp(
                             if (showUploads) "uploads"
                             else if (showRequests) "requests"
                             else if (showNotebook) "notebook"
-                            else if (showActivity) "activity"
-                            else if (showLibrary) "library"
-                            else if (showDashboard) "home" else if (showEbooks) "read" else "audio",
+                            else if (showHistory) "history"
+                            else if (showActivity) "activity" else selectedTab.name,
                         animationSpec = tween(160),
                         label = "Screen transition",
                     ) { screen ->
@@ -245,25 +275,33 @@ fun OrbitApp(
                                 onBack = { showNotebook = false },
                                 onAudio = model::select,
                             )
+                        else if (screen == "history")
+                            ReadingHistoryScreen(
+                                app,
+                                state.session!!,
+                                Modifier.padding(padding),
+                                onSignIn = if (needsSignIn) ({ signingInAgain = true }) else null,
+                                onBack = { showHistory = false },
+                            )
                         else if (screen == "activity")
                             ReadingActivityScreen(state.session!!, Modifier.padding(padding)) {
                                 showActivity = false
                             }
-                        else if (screen == "library")
+                        else if (screen == OrbitTab.LIBRARY.name)
                             LibraryBrowser(
                                 app,
                                 state.session!!,
                                 Modifier.padding(padding),
                                 onRead = { id ->
                                     pendingEbook = id
-                                    showLibrary = false
-                                    showDashboard = false
                                     showEbooks = true
+                                    selectTab(OrbitTab.SEARCH)
                                 },
                                 onListen = model::select,
                                 onActivity = { showActivity = true },
+                                onSignIn = if (needsSignIn) ({ signingInAgain = true }) else null,
                             )
-                        else if (screen == "home")
+                        else if (screen == OrbitTab.HOME.name)
                             Dashboard(
                                 app,
                                 state.session!!,
@@ -272,42 +310,84 @@ fun OrbitApp(
                                 openError = state.error,
                                 onAppearance = { showAppearance = true },
                                 onActivity = { showActivity = true },
-                                onServers = { showServers = true },
+                                onLibrary = { selectTab(OrbitTab.LIBRARY) },
+                                onNotebook = { showNotebook = true },
+                                onHistory = { showHistory = true },
+                                onListen = model::select,
+                                onResume = { resumeAudio(it) },
+                                onDownloads = { selectTab(OrbitTab.DOWNLOADS) },
+                                onSignIn = if (needsSignIn) ({ signingInAgain = true }) else null,
+                                playbackMessage = message,
+                                onRead = { id ->
+                                    pendingEbook = id
+                                    showEbooks = true
+                                    selectTab(OrbitTab.SEARCH)
+                                },
+                            )
+                        else if (screen == OrbitTab.MORE.name)
+                            MoreScreen(
+                                Modifier.padding(padding),
+                                onActivity = { showActivity = true },
+                                onHistory = { showHistory = true },
                                 onNotebook = { showNotebook = true },
                                 onRequests = { showRequests = true },
                                 onUploads = { showUploads = true },
-                                onLibrary = {
-                                    showDashboard = false
-                                    showLibrary = true
-                                },
-                                onListen = model::select,
-                                onRead = { id ->
-                                    pendingEbook = id
-                                    showDashboard = false
-                                    showEbooks = true
-                                },
+                                onAppearance = { showAppearance = true },
+                                onServers = { showServers = true },
                             )
-                        else if (screen == "read")
-                            EbookLibrary(
+                        else if (screen == OrbitTab.DOWNLOADS.name)
+                            DownloadsScreen(
                                 app,
                                 state.session!!,
-                                Modifier.padding(padding),
-                                pendingEbook,
-                                { pendingEbook = null },
+                                work,
+                                message ?: state.error,
+                                { resumeAudio(it, requireDownload = true) },
+                                { model.select(it, savedOnly = true) },
+                                refreshDownloads to state.downloadsRevision,
+                                onSignIn = if (needsSignIn) ({ signingInAgain = true }) else null,
+                                modifier = Modifier.padding(padding),
                             )
                         else
-                            AudioCatalog(
-                                app,
-                                state,
-                                catalog,
-                                work,
-                                Modifier.padding(padding),
-                                message,
-                                model::search,
-                                model::select,
-                                model::sort,
-                                model::readFilter,
-                            )
+                            Column(Modifier.padding(padding).fillMaxSize()) {
+                                Box(Modifier.padding(horizontal = 20.dp).padding(bottom = 12.dp)) {
+                                    SegmentPicker(
+                                        listOf("Audiobooks", "Ebooks"),
+                                        if (showEbooks) 1 else 0,
+                                        { showEbooks = it == 1 },
+                                    )
+                                }
+                                if (needsSignIn)
+                                    Box(
+                                        Modifier.padding(horizontal = 20.dp).padding(bottom = 12.dp)
+                                    ) {
+                                        OfflineSignIn(
+                                            onSignIn = { signingInAgain = true },
+                                            onDownloads = { selectTab(OrbitTab.DOWNLOADS) },
+                                        )
+                                    }
+                                if (showEbooks)
+                                    EbookLibrary(
+                                        app,
+                                        state.session!!,
+                                        Modifier.weight(1f),
+                                        pendingEbook,
+                                        { pendingEbook = null },
+                                    )
+                                else {
+                                    val catalog = model.catalog.collectAsLazyPagingItems()
+                                    AudioCatalog(
+                                        app,
+                                        state,
+                                        catalog,
+                                        Modifier.weight(1f),
+                                        message,
+                                        model::search,
+                                        model::select,
+                                        model::sort,
+                                        model::readFilter,
+                                    )
+                                }
+                            }
                     }
                 }
             if (showAppearance)
@@ -338,10 +418,7 @@ fun OrbitApp(
                             Bundle.EMPTY,
                         )
                     },
-                    {
-                        openBook(controller, it)
-                        showPlayer = true
-                    },
+                    { resumeAudio(it) },
                 )
             if (showServers && !state.addingServer)
                 ServerConnections(
@@ -364,11 +441,11 @@ fun OrbitApp(
                     model,
                     controller,
                     onPlay = {
-                        if (Build.VERSION.SDK_INT >= 33)
+                        if (Build.VERSION.SDK_INT >= 33) {
                             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        openBook(controller, book.book.id)
+                        }
+                        resumeAudio(book.book.id, requireDownload = state.selectedSavedOnly)
                         model.closeDetail()
-                        showPlayer = true
                     },
                 )
             }
@@ -382,7 +459,8 @@ fun OrbitApp(
                 ) {
                     PlayerSheet(current!!, controller, app, onClose = { showPlayer = false })
                 }
-            if (conflict != null)
+            val pendingConflict = conflict?.takeIf { it.owner == state.session?.scope }
+            if (pendingConflict != null)
                 AlertDialog(
                     onDismissRequest = { app.progressConflict.value = null },
                     title = { Text("Where would you like to resume?") },
@@ -392,12 +470,30 @@ fun OrbitApp(
                         )
                     },
                     confirmButton = {
-                        TextButton(onClick = { openBook(controller, conflict!!, "local") }) {
+                        TextButton(
+                            onClick = {
+                                app.progressConflict.value = null
+                                resumeAudio(
+                                    pendingConflict.bookId,
+                                    pendingConflict.requireDownload,
+                                    "local",
+                                )
+                            }
+                        ) {
                             Text("Use this device")
                         }
                     },
                     dismissButton = {
-                        TextButton(onClick = { openBook(controller, conflict!!, "server") }) {
+                        TextButton(
+                            onClick = {
+                                app.progressConflict.value = null
+                                resumeAudio(
+                                    pendingConflict.bookId,
+                                    pendingConflict.requireDownload,
+                                    "server",
+                                )
+                            }
+                        ) {
                             Text("Use server position")
                         }
                     },
@@ -433,14 +529,16 @@ private fun SignIn(
     error: String?,
     login: (String, String, String) -> Unit,
     onCancel: (() -> Unit)? = null,
+    existing: Session? = null,
     onMagic: (String, String) -> Unit = { _, _ -> },
     options: LoginOptions? = null,
     optionsAddress: String? = null,
     onOptions: (String) -> Unit = {},
     onProvider: (String, OidcProvider) -> Unit = { _, _ -> },
 ) {
-    var server by rememberSaveable { mutableStateOf("") }
-    var username by rememberSaveable { mutableStateOf("") }
+    var server by rememberSaveable(existing?.scope) { mutableStateOf(existing?.server.orEmpty()) }
+    var username by
+        rememberSaveable(existing?.scope) { mutableStateOf(existing?.user?.username.orEmpty()) }
     var password by remember { mutableStateOf("") }
     var magic by remember { mutableStateOf(false) }
     var magicValue by remember { mutableStateOf("") }
@@ -462,15 +560,21 @@ private fun SignIn(
                 Modifier.size(48.dp),
                 tint = MaterialTheme.colorScheme.primary,
             )
-            if (onCancel != null)
+            if (onCancel != null) {
                 TextButton(onClick = onCancel, enabled = !busy) { Text("Back to your server") }
+            }
             Text(
-                if (onCancel != null) "Connect another server" else "A home for\nyour books.",
+                when {
+                    existing != null -> "Sign in again"
+                    onCancel != null -> "Connect another server"
+                    else -> "A home for\nyour books."
+                },
                 style = MaterialTheme.typography.headlineLarge,
                 fontFamily = FontFamily.Serif,
             )
             Text(
-                "Connect Orbit Reader to your BookOrbit server.",
+                if (existing != null) "Sign in to browse your server and sync progress."
+                else "Connect Orbit Reader to your BookOrbit server.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedTextField(
@@ -662,7 +766,9 @@ fun BookCover(
                     val bitmap =
                         (result.result.drawable as? android.graphics.drawable.BitmapDrawable)
                             ?.bitmap
-                    if (bitmap != null) {
+                    if (
+                        bitmap != null && bitmap.config != android.graphics.Bitmap.Config.HARDWARE
+                    ) {
                         var r = 0L
                         var g = 0L
                         var b = 0L
@@ -705,15 +811,28 @@ fun BookCover(
     }
 }
 
-fun openBook(controller: MediaController?, bookId: Int, resolution: String? = null) {
-    controller?.sendCustomCommand(
-        SessionCommand(OPEN_BOOK, Bundle.EMPTY),
-        Bundle().apply {
-            putInt("bookId", bookId)
-            putString("resolution", resolution)
-        },
-    )
-}
+private suspend fun openBook(controller: MediaController, request: AudioResumeRequest): Boolean =
+    suspendCancellableCoroutine { continuation ->
+        val result =
+            controller.sendCustomCommand(
+                SessionCommand(OPEN_BOOK, Bundle.EMPTY),
+                Bundle().apply {
+                    putInt("bookId", request.id)
+                    putString("resolution", request.resolution)
+                    putString("scope", request.owner)
+                    putBoolean("requireDownload", request.requireDownload)
+                },
+            )
+        result.addListener(
+            {
+                continuation.resume(
+                    runCatching { result.get().resultCode == SessionResult.RESULT_SUCCESS }
+                        .getOrDefault(false)
+                )
+            },
+            Runnable::run,
+        )
+    }
 
 fun duration(value: Long): String {
     val seconds = (value / 1000).coerceAtLeast(0)

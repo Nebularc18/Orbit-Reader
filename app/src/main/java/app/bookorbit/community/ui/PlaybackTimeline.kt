@@ -15,6 +15,8 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 
@@ -29,17 +31,35 @@ fun PlaybackTimeline(
     enabled: Boolean = true,
     showRemaining: Boolean = false,
     onTimeToggle: (() -> Unit)? = null,
+    title: String? = null,
 ) {
     val active = enabled && durationMs > 0
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
     val progressColor = MaterialTheme.colorScheme.primary.copy(alpha = if (active) 1f else 0.38f)
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     Column(Modifier.fillMaxWidth()) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                title ?: label,
+                Modifier.weight(1f),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (title != null && title != label) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+        }
         Slider(
             value = elapsedMs.toFloat().coerceIn(0f, durationMs.toFloat().coerceAtLeast(1f)),
             onValueChange = onScrub,
@@ -79,30 +99,37 @@ fun PlaybackTimeline(
                 }
             },
         )
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text(
                 if (active) duration(elapsedMs) else "Unavailable",
                 style = MaterialTheme.typography.labelMedium,
             )
-            Text(
+            val trailing =
                 if (!active) "Duration unknown"
                 else if (showRemaining)
                     "${duration(remainingAudioTime(durationMs, elapsedMs))} left"
-                else duration(durationMs) + if (onTimeToggle != null) " total" else "",
-                modifier =
-                    if (onTimeToggle != null && active)
-                        Modifier.clickable(
-                                role = Role.Button,
-                                onClickLabel =
-                                    if (showRemaining) "Show total duration"
-                                    else "Show time remaining",
-                                onClick = onTimeToggle,
-                            )
-                            .heightIn(min = 48.dp)
-                            .padding(horizontal = 4.dp)
-                    else Modifier,
-                style = MaterialTheme.typography.labelMedium,
-            )
+                else duration(durationMs) + if (onTimeToggle != null) " total" else ""
+            if (onTimeToggle != null && active) {
+                Box(
+                    Modifier.clickable(
+                            role = Role.Button,
+                            onClickLabel =
+                                if (showRemaining) "Show total duration" else "Show time remaining",
+                            onClick = onTimeToggle,
+                        )
+                        .heightIn(min = 48.dp)
+                        .padding(horizontal = 4.dp),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    Text(trailing, style = MaterialTheme.typography.labelMedium)
+                }
+            } else {
+                Text(trailing, style = MaterialTheme.typography.labelMedium)
+            }
         }
     }
 }

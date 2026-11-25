@@ -24,12 +24,23 @@ class ProgressWorker(context: Context, parameters: WorkerParameters) :
                     val position =
                         storage.position(bookId)?.takeIf { it.dirty }
                             ?: return@withContext Result.success()
-                    val remote = app.api.saveProgress(bookId, position.write(), scope)
+                    val remote =
+                        try {
+                            app.api.saveProgress(bookId, position.write(), scope)
+                        } catch (error: ApiFailure) {
+                            if (error.status == 409) storage.markProgressConflict(bookId, position)
+                            throw error
+                        }
                     storage.acknowledge(bookId, position, remote)
                 }
                 Result.retry()
             } catch (error: ApiFailure) {
-                if (app.sessions.read()?.scope != scope && app.sessions.hasConnection(scope))
+                if (
+                    app.sessions.hasConnection(scope) &&
+                        (app.sessions.read()?.scope != scope ||
+                            (error.status == 401 &&
+                                scope in app.api.reauthenticationRequired.value))
+                )
                     return@withContext Result.retry()
                 Result.failure(workDataOf("error" to error.message))
             } catch (_: IOException) {

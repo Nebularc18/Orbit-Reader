@@ -32,6 +32,56 @@ class AudioStorageTest {
     }
 
     @Test
+    fun `recorded progress conflicts survive a new capture until the revision is resolved`() {
+        storage.capturePosition(1, asset.assetId, 300, "2026-10-18T12:00:00Z", manifest.revision)
+        val rejected = storage.position(1)!!
+        storage.capturePosition(1, asset.assetId, 900, rejected.capturedAt, manifest.revision)
+        storage.markProgressConflict(1, rejected)
+        assertTrue(storage.position(1)!!.conflicted)
+        storage.capturePosition(1, asset.assetId, 950, rejected.capturedAt, manifest.revision)
+        assertTrue(storage.position(1)!!.conflicted)
+        val resolved =
+            LocalPosition(asset.assetId, 500, rejected.capturedAt, 2, manifest.revision, false)
+        storage.savePosition(1, resolved)
+        storage.markProgressConflict(1, rejected)
+        assertEquals(resolved, storage.position(1))
+    }
+
+    @Test
+    fun `acknowledging an old write leaves the selected server position clean`() {
+        storage.capturePosition(1, asset.assetId, 300, "2026-10-18T12:00:00Z", manifest.revision)
+        val sent = storage.position(1)!!
+        val selected =
+            LocalPosition(asset.assetId, 900, sent.capturedAt, 5, manifest.revision, false)
+        storage.savePosition(1, selected)
+        storage.acknowledge(
+            1,
+            sent,
+            PlaybackState(asset.assetId, 300, sent.capturedAt, 4, manifest.revision),
+        )
+        assertEquals(selected, storage.position(1))
+        storage.acknowledge(
+            1,
+            sent,
+            PlaybackState(asset.assetId, 300, sent.capturedAt, 5, manifest.revision),
+        )
+        assertEquals(selected, storage.position(1))
+    }
+
+    @Test
+    fun `download inventory counts partial and orphaned data without listing streaming metadata`() {
+        storage.markDownload(manifest)
+        storage.asset(1, asset).writeBytes(ByteArray(8))
+        storage.bookDir(2).resolve("orphan.audio.part").writeBytes(ByteArray(3))
+        storage.saveManifest(manifest.copy(book = manifest.book.copy(id = 3)))
+        val (downloads, bytes) = storage.downloadInventory { it }
+        assertEquals(listOf(1), downloads.map { it.manifest.book.id })
+        assertTrue(downloads.single().complete)
+        assertEquals(8L, downloads.single().bytes)
+        assertEquals(11L, bytes)
+    }
+
+    @Test
     fun `finished cleanup removes media while preserving manifest position and bookmarks`() {
         storage.markDownload(manifest)
         storage.asset(1, asset).writeBytes(ByteArray(8))

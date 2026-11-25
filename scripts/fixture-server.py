@@ -148,7 +148,7 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
 
     def authorized(self):
-        if self.headers.get("Authorization") != "Bearer fixture-access":
+        if getattr(self.server, "expire_auth", False) or self.headers.get("Authorization") != "Bearer fixture-access":
             self.send_json({"message": "Unauthorized"}, 401)
             return False
         return True
@@ -213,6 +213,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({}, 401)
             return self.send_json({"accessToken": "fixture-access", "refreshToken": "a" * 64, "user": {"id": 1, "name": "Reader", "username": "reader", "isSuperuser": False, "permissions": ["library_download", "library_edit_metadata", "library_upload", "book_request_access"]}})
         if self.path == "/api/v1/auth/refresh":
+            if getattr(self.server, "expire_auth", False):
+                return self.send_json({}, 401)
             if not data and self.headers.get('Cookie') == 'refresh_token='+'b'*64:
                 return self.send_json({'accessToken':'fixture-access'}, cookie='refresh_token='+'b'*64+'; HttpOnly; Path=/api/v1/auth; SameSite=Lax')
             return self.send_json({"accessToken": "fixture-access", "refreshToken": "a" * 64})
@@ -391,6 +393,23 @@ class Handler(BaseHTTPRequestHandler):
             rows.extend(dict(book, authors=['Orbit Test Reader'], coverVersion='fixture', readStatus={'status': 'unread'}) for book in [EBOOK, PDF_BOOK, COMIC_BOOK, CONVERTED_BOOK])
             page, size = int(query.get('page', ['0'])[0]), int(query.get('size', ['30'])[0])
             return self.send_json({'items': rows[page*size:(page+1)*size], 'total': len(rows), 'page': page, 'size': size})
+        if parsed.path in ['/api/v1/reading-history', '/api/v1/reading-history/summary']:
+            year = datetime.date.today().year
+            rows = [
+                {'id': 1, 'bookId': 2, 'title': EBOOK['title'], 'authors': ['Orbit Test Reader'],
+                 'format': 'epub', 'coverVersion': 'fixture', 'endedOn': f'{year}-01-01', 'readNumber': 2},
+                {'id': 2, 'bookId': 1, 'title': MANIFEST['book']['title'], 'authors': MANIFEST['book']['authors'],
+                 'format': 'mp3', 'coverVersion': 'fixture', 'endedOn': f'{year - 1}-12-31', 'readNumber': 1},
+            ]
+            if parsed.path.endswith('/summary'):
+                return self.send_json({'years': [{'year': year, 'reads': 1}, {'year': year - 1, 'reads': 1}]})
+            search = query.get('search', [''])[0].casefold()
+            selected_year = query.get('year', [''])[0]
+            rows = [row for row in rows if (not selected_year or row['endedOn'][:4] == selected_year)
+                    and search in ' '.join([row['title'], *row['authors']]).casefold()]
+            offset, limit = int(query.get('offset', ['0'])[0]), int(query.get('limit', ['30'])[0])
+            return self.send_json({'items': rows[offset:offset + limit], 'total': len(rows),
+                                   'offset': offset, 'limit': limit, 'months': None})
         if parsed.path == '/api/v1/user-statistics/activity-overview':
             today = datetime.date.today()
             days = [{'day': (today - datetime.timedelta(days=27-i)).isoformat(), 'totalSeconds': (i % 5)*1200, 'readingSeconds': (i % 5)*400, 'listeningSeconds': (i % 5)*800, 'sessionsCount': i % 5} for i in range(28)]
@@ -560,6 +579,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1", help="Bind address. Use a trusted LAN interface only for emulator access.")
     parser.add_argument("--port", type=int, default=4890)
+    parser.add_argument("--expire-auth", action="store_true", help="Reject authenticated requests and token refreshes for offline recovery tests")
     parser.add_argument("--catalog-size", type=int, default=0, help="Additional synthetic books per format for scrolling tests")
     parser.add_argument("--upload-delay-seconds", type=float, default=0, help="Delay each synthetic chunk response to test pause/resume (0 to 5 seconds)")
     parser.add_argument("--oidc", action="store_true", help="Enable a synthetic browser-based OIDC flow for client tests")
@@ -592,5 +612,7 @@ if __name__ == "__main__":
                 parser.error("Invalid fixture asset")
             if (BOOK_DIR / f"{asset['fileId']}.{asset['format']}").stat().st_size != asset["sizeBytes"]:
                 parser.error("Fixture audio size does not match its manifest")
-    print(f"Fixture listening on {args.host}:{args.port}", flush=True)
-    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
+    with ThreadingHTTPServer((args.host, args.port), Handler) as server:
+        server.expire_auth = args.expire_auth
+        print(f"Fixture listening on {args.host}:{args.port}", flush=True)
+        server.serve_forever()

@@ -25,12 +25,28 @@ class LibraryBrowserViewModel(application: Application) : AndroidViewModel(appli
     val owner = app.sessions.read()?.scope.orEmpty()
     private val mutable = MutableStateFlow(LibraryBrowserState())
     val state = mutable.asStateFlow()
+    private val refresh = MutableStateFlow(0)
     private var selection: Job? = null
+
+    init {
+        viewModelScope.launch {
+            app.api.reauthenticationRequired
+                .map { owner in it }
+                .distinctUntilChanged()
+                .drop(1)
+                .filter { !it }
+                .collect { refresh.update { it + 1 } }
+        }
+    }
+
     @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
     val groups =
-        mutable
-            .map { Triple(it.kind, it.query, it.order) }
-            .distinctUntilChanged()
+        combine(
+                mutable.map { Triple(it.kind, it.query, it.order) }.distinctUntilChanged(),
+                refresh,
+            ) { filters, _ ->
+                filters
+            }
             .debounce(300)
             .flatMapLatest { (kind, query, order) ->
                 groupPager { page ->
@@ -43,9 +59,10 @@ class LibraryBrowserViewModel(application: Application) : AndroidViewModel(appli
             .cachedIn(viewModelScope)
     @OptIn(ExperimentalCoroutinesApi::class)
     val books =
-        mutable
-            .map { it.kind to it.group?.id }
-            .distinctUntilChanged()
+        combine(mutable.map { it.kind to it.group?.id }.distinctUntilChanged(), refresh) { group, _
+                ->
+                group
+            }
             .flatMapLatest { (kind, id) ->
                 if (id == null) flowOf(PagingData.empty())
                 else

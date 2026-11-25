@@ -2,8 +2,16 @@ package app.bookorbit.community.data
 
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.Cookie
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -43,6 +51,14 @@ fun normalizeServer(value: String): String {
 
 class OrbitApi(val sessions: SessionStore) {
     private val refreshLock = Any()
+    private val expiredScopes = MutableStateFlow<Set<String>>(emptySet())
+    val reauthenticationRequired = expiredScopes.asStateFlow()
+
+    private fun saveAuthenticated(session: Session) {
+        sessions.save(session)
+        expiredScopes.update { it - session.scope }
+    }
+
     private val transport =
         OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -76,26 +92,36 @@ class OrbitApi(val sessions: SessionStore) {
                             if (current.scope != session.scope) throw ApiFailure(401)
                             if (current.accessToken != session.accessToken) current
                             else {
-                                val tokens: Tokens =
-                                    if (current.cookieRefresh) refreshMagic(current)
-                                    else
-                                        decode(
-                                            raw(
-                                                session.server,
-                                                "auth/refresh",
-                                                "POST",
-                                                buildJsonObject {
-                                                        put("refreshToken", current.refreshToken)
-                                                    }
-                                                    .toString(),
+                                if (current.scope in expiredScopes.value) throw ApiFailure(401)
+                                val tokens =
+                                    try {
+                                        if (current.cookieRefresh) refreshMagic(current)
+                                        else
+                                            decode<Tokens>(
+                                                raw(
+                                                    current.server,
+                                                    "auth/refresh",
+                                                    "POST",
+                                                    buildJsonObject {
+                                                            put(
+                                                                "refreshToken",
+                                                                current.refreshToken,
+                                                            )
+                                                        }
+                                                        .toString(),
+                                                )
                                             )
-                                        )
+                                    } catch (error: ApiFailure) {
+                                        if (error.status == 401)
+                                            expiredScopes.update { it + current.scope }
+                                        throw error
+                                    }
                                 current
                                     .copy(
                                         accessToken = tokens.accessToken,
                                         refreshToken = tokens.refreshToken,
                                     )
-                                    .also(sessions::save)
+                                    .also(::saveAuthenticated)
                             }
                         }
                     chain.proceed(
@@ -127,7 +153,7 @@ class OrbitApi(val sessions: SessionStore) {
                     )
                 )
             Session(server, credentials.accessToken, credentials.refreshToken, credentials.user)
-                .also(sessions::save)
+                .also(::saveAuthenticated)
         }
 
     fun loginMagic(address: String, value: String): Session =
@@ -150,7 +176,7 @@ class OrbitApi(val sessions: SessionStore) {
                             credentials.user,
                             cookieRefresh = true,
                         )
-                        .also(sessions::save)
+                        .also(::saveAuthenticated)
                 }
         }
 
@@ -231,7 +257,7 @@ class OrbitApi(val sessions: SessionStore) {
                     credentials.refreshToken,
                     credentials.user,
                 )
-                .also(sessions::save)
+                .also(::saveAuthenticated)
         }
 
     fun uploadCapabilities(owner: String): UploadCapabilities =
@@ -486,6 +512,22 @@ class OrbitApi(val sessions: SessionStore) {
         )
     }
 
+    fun readingHistory(owner: String, query: String, year: Int?, page: Int): ReadingHistoryPage {
+        require(page >= 1)
+        val encoded = java.net.URLEncoder.encode(query.trim().take(200), "UTF-8")
+        val offset = (page.toLong() - 1) * BOOK_PAGE_SIZE
+        val period = year?.let { "&year=$it" }.orEmpty()
+        return decode(
+            request(
+                "reading-history?offset=$offset&limit=$BOOK_PAGE_SIZE&search=$encoded$period",
+                expectedScope = owner,
+            )
+        )
+    }
+
+    fun readingHistorySummary(owner: String): ReadingHistorySummary =
+        decode(request("reading-history/summary", expectedScope = owner))
+
     fun activityOverview(owner: String): ActivityOverview =
         decode(request("user-statistics/activity-overview", expectedScope = owner))
 
@@ -685,7 +727,36 @@ class OrbitApi(val sessions: SessionStore) {
         decode<AudioManifest>(request("audiobooks/$bookId/manifest", expectedScope = expectedScope))
             .validated()
 
-    fun progress(bookId: Int): PlaybackState? = decode(request("audiobooks/$bookId/playback-state"))
+    fun progress(bookId: Int, expectedScope: String? = null): PlaybackState? =
+        decode(request("audiobooks/$bookId/playback-state", expectedScope = expectedScope))
+
+    suspend fun cachedPlaybackProgress(bookId: Int, owner: String): PlaybackState? =
+        try {
+            withTimeoutOrNull(3_000) {
+                suspendCancellableCoroutine { continuation ->
+                    val call =
+                        requestCall("audiobooks/$bookId/playback-state", expectedScope = owner)
+                    continuation.invokeOnCancellation { call.cancel() }
+                    call.enqueue(
+                        object : Callback {
+                            override fun onFailure(call: Call, e: IOException) {
+                                continuation.resumeWith(Result.failure(e))
+                            }
+
+                            override fun onResponse(call: Call, response: Response) {
+                                continuation.resumeWith(
+                                    runCatching { decode<PlaybackState?>(checked(response)) }
+                                )
+                            }
+                        }
+                    )
+                }
+            }
+        } catch (_: IOException) {
+            null
+        } catch (_: SerializationException) {
+            null
+        }
 
     fun saveListeningSession(fileId: Int, value: ListeningSessionWrite, owner: String) {
         request("books/files/$fileId/sessions", "POST", wireJson.encodeToString(value), owner)
@@ -735,17 +806,22 @@ class OrbitApi(val sessions: SessionStore) {
         expectedScope: String? = null,
         headers: Map<String, String> = emptyMap(),
         client: OkHttpClient = authenticatedClient,
-    ): Response =
-        checked(
-            client
-                .newCall(
-                    buildRequest(url(path), method, body)
-                        .newBuilder()
-                        .apply { headers.forEach { (name, value) -> header(name, value) } }
-                        .tag(String::class.java, expectedScope ?: sessions.read()?.scope)
-                        .build()
-                )
-                .execute()
+    ): Response = checked(requestCall(path, method, body, expectedScope, headers, client).execute())
+
+    private fun requestCall(
+        path: String,
+        method: String = "GET",
+        body: String? = null,
+        expectedScope: String? = null,
+        headers: Map<String, String> = emptyMap(),
+        client: OkHttpClient = authenticatedClient,
+    ): Call =
+        client.newCall(
+            buildRequest(url(path), method, body)
+                .newBuilder()
+                .apply { headers.forEach { (name, value) -> header(name, value) } }
+                .tag(String::class.java, expectedScope ?: sessions.read()?.scope)
+                .build()
         )
 
     private fun raw(server: String, path: String, method: String, body: String?): Response =

@@ -124,7 +124,12 @@ internal fun syncAutomaticReadingProgress(
         if (api.sessions.read()?.scope != owner)
             return if (api.sessions.hasConnection(owner)) ListenableWorker.Result.retry()
             else ListenableWorker.Result.failure()
-        if (error.status >= 500 || error.status == 429) ListenableWorker.Result.retry()
+        if (
+            error.status >= 500 ||
+                error.status == 429 ||
+                (error.status == 401 && owner in api.reauthenticationRequired.value)
+        )
+            ListenableWorker.Result.retry()
         else conflict(storage, fileId)
     } catch (_: IOException) {
         ListenableWorker.Result.retry()

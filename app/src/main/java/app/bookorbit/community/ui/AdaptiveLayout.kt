@@ -4,9 +4,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.LibraryBooks
-import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -28,8 +25,8 @@ fun adaptiveBookColumns(): GridCells {
 
 @Composable
 fun AdaptiveAppScaffold(
-    selectedTab: Int,
-    onTab: (Int) -> Unit,
+    selectedTab: OrbitTab,
+    onTab: (OrbitTab) -> Unit,
     topBar: @Composable () -> Unit,
     bottomBar: @Composable () -> Unit,
     content: @Composable (PaddingValues) -> Unit,
@@ -46,25 +43,15 @@ fun AdaptiveAppScaffold(
                     .verticalScroll(rememberScrollState()),
                 containerColor = Color.Transparent,
             ) {
-                val labels = listOf("Home", "Library", "Listen", "Read", "Downloads")
-                val ids = listOf(0, 4, 1, 2, 3)
-                val icons =
-                    listOf(
-                        Icons.Rounded.Home,
-                        Icons.AutoMirrored.Rounded.LibraryBooks,
-                        Icons.Rounded.Headphones,
-                        Icons.Rounded.AutoStories,
-                        Icons.Rounded.DownloadDone,
-                    )
-                labels.forEachIndexed { index, label ->
+                OrbitTab.entries.forEach { tab ->
                     if (largeText)
                         NavigationDrawerItem(
-                            selected = selectedTab == ids[index],
-                            onClick = { onTab(ids[index]) },
-                            icon = { Icon(icons[index], null) },
+                            selected = selectedTab == tab,
+                            onClick = { onTab(tab) },
+                            icon = { Icon(tab.icon, null) },
                             label = {
                                 Text(
-                                    label,
+                                    tab.label,
                                     maxLines = 1,
                                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                 )
@@ -73,12 +60,12 @@ fun AdaptiveAppScaffold(
                         )
                     else
                         NavigationRailItem(
-                            selected = selectedTab == ids[index],
-                            onClick = { onTab(ids[index]) },
-                            icon = { Icon(icons[index], null) },
+                            selected = selectedTab == tab,
+                            onClick = { onTab(tab) },
+                            icon = { Icon(tab.icon, null) },
                             label = {
                                 Text(
-                                    label,
+                                    tab.label,
                                     maxLines = 1,
                                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                 )

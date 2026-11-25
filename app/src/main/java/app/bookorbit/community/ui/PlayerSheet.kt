@@ -6,6 +6,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.FormatListBulleted
 import androidx.compose.material.icons.rounded.*
@@ -16,9 +19,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -35,6 +41,7 @@ import androidx.work.WorkManager
 import app.bookorbit.community.OrbitApplication
 import app.bookorbit.community.data.AudioManifest
 import app.bookorbit.community.data.playbackSpeeds
+import app.bookorbit.community.playback.AudioSeek
 import app.bookorbit.community.playback.AudioTimeline
 import app.bookorbit.community.playback.RELOAD_LISTENING
 import app.bookorbit.community.playback.SLEEP_TIMER
@@ -112,23 +119,52 @@ fun PlayerSheet(
     val chapterDuration = chapter?.let { (it.endMs - it.startMs).coerceAtLeast(0) } ?: assetDuration
     val shownElapsed =
         bookScrub?.toLong() ?: chapterScrub?.let { chapterStart + it.toLong() } ?: elapsed
-    fun seekBook(milliseconds: Long) {
-        val target = timeline.seek(milliseconds) ?: return
+    val seekNotice = remember(book) { SnackbarHostState() }
+    var undoSeek by remember(book) { mutableStateOf<AudioSeek?>(null, referentialEqualityPolicy()) }
+    fun seek(target: AudioSeek, allowUndo: Boolean = true) {
+        val currentIndex = controller.currentMediaItemIndex
+        val currentPosition = controller.currentPosition.coerceAtLeast(0L)
+        if (book.assets.getOrNull(currentIndex)?.assetId != controller.currentMediaItem?.mediaId)
+            return
+        if (allowUndo) undoSeek = AudioSeek(currentIndex, currentPosition)
         controller.seekTo(target.assetIndex, target.positionMs)
         assetIndex = target.assetIndex
         position = target.positionMs
     }
+    fun seekBook(milliseconds: Long) {
+        timeline.seek(milliseconds)?.let { seek(it) }
+    }
+    LaunchedEffect(undoSeek) {
+        val restore = undoSeek ?: return@LaunchedEffect
+        if (
+            seekNotice.showSnackbar(
+                "Playback position changed",
+                actionLabel = "Undo",
+                withDismissAction = true,
+                duration = SnackbarDuration.Long,
+            ) == SnackbarResult.ActionPerformed
+        )
+            seek(restore, allowUndo = false)
+        undoSeek = null
+    }
     var coverColor by remember(book.book.id) { mutableStateOf<Color?>(null) }
     var more by remember { mutableStateOf(false) }
+    var wholeBookTimeline by remember(book.book.id) { mutableStateOf(false) }
+    val configuration = LocalConfiguration.current
+    val compact = configuration.screenHeightDp < 650 || configuration.fontScale >= 1.3f
+    val scroll = rememberScrollState()
     Box(Modifier.fillMaxSize()) {
-        val glow = coverColor ?: MaterialTheme.colorScheme.primary
-        Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.surface))
+        val colors = MaterialTheme.colorScheme
+        val glow = coverColor ?: colors.primary
+        val dark = colors.surface.luminance() < .5f
+        Box(Modifier.matchParentSize().background(colors.surface))
         androidx.compose.foundation.Canvas(Modifier.matchParentSize()) {
+            val pool = glow.copy(alpha = if (dark) .56f else .28f).compositeOver(colors.surface)
             drawRect(
                 Brush.radialGradient(
-                    listOf(glow.copy(alpha = .55f), glow.copy(alpha = .12f), Color.Transparent),
-                    center = Offset(size.width * .5f, size.height * .27f),
-                    radius = size.width * .95f,
+                    listOf(pool, colors.surface),
+                    center = Offset(size.width * .5f, size.height * .29f),
+                    radius = maxOf(size.width, size.height * .72f),
                 )
             )
         }
@@ -137,20 +173,22 @@ fun PlayerSheet(
                 .widthIn(max = 640.dp)
                 .fillMaxSize()
                 .safeDrawingPadding()
-                .padding(horizontal = 24.dp)
-                .padding(vertical = 12.dp),
+                .then(if (compact) Modifier.verticalScroll(scroll) else Modifier)
+                .padding(horizontal = 22.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 CircleAction(Icons.Rounded.KeyboardArrowDown, "Close player", onClose)
-                Text(
-                    "${duration(remainingAudioTime(timeline.durationMs, shownElapsed))} left",
-                    Modifier.weight(1f),
-                    textAlign = TextAlign.Center,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    if (timeline.hasDurations) {
+                        Text(
+                            "${duration(remainingAudioTime(timeline.durationMs, shownElapsed))} left",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = colors.onSurfaceVariant,
+                        )
+                    }
+                }
                 Box {
                     CircleAction(Icons.Rounded.MoreHoriz, "More playback options", { more = true })
                     DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
@@ -173,10 +211,14 @@ fun PlayerSheet(
             }
             // Measure the controls first so artwork gives up space on shorter screens.
             BoxWithConstraints(
-                Modifier.fillMaxWidth().weight(1f),
+                Modifier.fillMaxWidth()
+                    .then(
+                        if (compact) Modifier.heightIn(max = 240.dp).aspectRatio(1f)
+                        else Modifier.weight(1f)
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
-                val coverSize = minOf(maxHeight, maxWidth, 260.dp)
+                val coverSize = minOf(maxHeight - 12.dp, maxWidth - 30.dp, 380.dp)
                 if (coverSize > 0.dp)
                     BookCover(
                         app,
@@ -190,7 +232,9 @@ fun PlayerSheet(
             Text(
                 book.book.title,
                 textAlign = TextAlign.Center,
-                style = MaterialTheme.typography.titleLarge,
+                style = MaterialTheme.typography.headlineSmall,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.Bold,
                 maxLines = 2,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
@@ -199,140 +243,151 @@ fun PlayerSheet(
                     "Narrated by ${book.book.narrators.joinToString(", ")}"
                 else book.book.authors.joinToString(", "),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
                 maxLines = 2,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
-            Text(
-                chapter?.title ?: "Part ${assetIndex + 1}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            PlaybackTimeline(
-                label =
-                    if (chapter != null) "Chapter ${chapterIndex + 1} of ${book.chapters.size}"
-                    else "Part ${assetIndex + 1} of ${book.assets.size}",
-                elapsedMs = (shownElapsed - chapterStart).coerceIn(0, chapterDuration),
-                durationMs = chapterDuration,
-                onScrub = { chapterScrub = it },
-                onSeek = {
-                    chapterScrub?.let {
-                        if (timeline.hasDurations) seekBook(chapterStart + it.toLong())
-                        else controller.seekTo(it.toLong())
-                    }
-                    chapterScrub = null
-                },
-                enabled = timeline.hasDurations || chapter == null,
-            )
-            PlaybackTimeline(
-                label = "Whole book",
-                elapsedMs = shownElapsed.coerceIn(0, timeline.durationMs),
-                durationMs = timeline.durationMs,
-                onScrub = { bookScrub = it },
-                onSeek = {
-                    bookScrub?.let { seekBook(it.toLong()) }
-                    bookScrub = null
-                },
-                showRemaining = listening.showRemainingTime,
-                onTimeToggle = model::toggleTimeDisplay,
-                enabled = timeline.hasDurations,
-            )
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(
-                    onClick = {
-                        val previous =
-                            if (elapsed - chapterStart > 3000) chapterStart
-                            else book.chapters.getOrNull(chapterIndex - 1)?.startMs ?: 0L
-                        seekBook(previous)
-                    },
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (!wholeBookTimeline) {
+                    PlaybackTimeline(
+                        label =
+                            if (chapter != null)
+                                "Chapter ${chapterIndex + 1} of ${book.chapters.size}"
+                            else "Part ${assetIndex + 1} of ${book.assets.size}",
+                        title = chapter?.title,
+                        elapsedMs = (shownElapsed - chapterStart).coerceIn(0, chapterDuration),
+                        durationMs = chapterDuration,
+                        onScrub = { chapterScrub = it },
+                        onSeek = {
+                            chapterScrub?.let {
+                                if (timeline.hasDurations) seekBook(chapterStart + it.toLong())
+                                else seek(AudioSeek(assetIndex, it.toLong()))
+                            }
+                            chapterScrub = null
+                        },
+                        enabled = timeline.hasDurations || chapter == null,
+                    )
+                } else {
+                    PlaybackTimeline(
+                        label = "Whole book",
+                        elapsedMs = shownElapsed.coerceIn(0, timeline.durationMs),
+                        durationMs = timeline.durationMs,
+                        onScrub = { bookScrub = it },
+                        onSeek = {
+                            bookScrub?.let { seekBook(it.toLong()) }
+                            bookScrub = null
+                        },
+                        showRemaining = listening.showRemainingTime,
+                        onTimeToggle = model::toggleTimeDisplay,
+                        enabled = timeline.hasDurations,
+                    )
+                }
+                TextButton(
+                    onClick = { wholeBookTimeline = !wholeBookTimeline },
                     enabled = timeline.hasDurations,
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
                 ) {
-                    Icon(Icons.Rounded.SkipPrevious, "Previous chapter", Modifier.size(24.dp))
-                }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircleAction(
-                        Icons.Rounded.Replay,
-                        "Back $backSeconds seconds",
-                        { controller.seekBack() },
-                    )
                     Text(
-                        "${backSeconds}s",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontSize = 10.sp,
+                        if (wholeBookTimeline) "Show chapter timeline"
+                        else "Show whole book timeline"
                     )
                 }
-                FilledIconButton(
-                    onClick = {
-                        if (controller.playbackState == Player.STATE_ENDED) {
-                            controller.seekTo(0, 0)
-                            controller.play()
-                        } else if (controller.playWhenReady) controller.pause()
-                        else controller.play()
-                    },
-                    modifier = Modifier.size(68.dp),
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                        if (playing) "Pause" else "Play",
-                        Modifier.size(30.dp),
-                    )
+                    IconButton(
+                        onClick = {
+                            val previous =
+                                if (elapsed - chapterStart > 3000) chapterStart
+                                else book.chapters.getOrNull(chapterIndex - 1)?.startMs ?: 0L
+                            seekBook(previous)
+                        },
+                        enabled = timeline.hasDurations,
+                    ) {
+                        Icon(Icons.Rounded.SkipPrevious, "Previous chapter", Modifier.size(24.dp))
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircleAction(
+                            Icons.Rounded.Replay,
+                            "Back $backSeconds seconds",
+                            { controller.seekBack() },
+                        )
+                        Text(
+                            "${backSeconds}s",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 10.sp,
+                        )
+                    }
+                    FilledIconButton(
+                        onClick = {
+                            if (controller.playbackState == Player.STATE_ENDED) {
+                                controller.seekTo(0, 0)
+                                controller.play()
+                            } else if (controller.playWhenReady) controller.pause()
+                            else controller.play()
+                        },
+                        modifier = Modifier.size(70.dp),
+                        shape = RoundedCornerShape(22.dp),
+                    ) {
+                        Icon(
+                            if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                            if (playing) "Pause" else "Play",
+                            Modifier.size(30.dp),
+                        )
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircleAction(
+                            Icons.Rounded.FastForward,
+                            "Forward $forwardSeconds seconds",
+                            { controller.seekForward() },
+                        )
+                        Text(
+                            "${forwardSeconds}s",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 10.sp,
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            book.chapters.getOrNull(chapterIndex + 1)?.let { seekBook(it.startMs) }
+                        },
+                        enabled =
+                            timeline.hasDurations &&
+                                chapterIndex >= 0 &&
+                                chapterIndex + 1 < book.chapters.size,
+                    ) {
+                        Icon(Icons.Rounded.SkipNext, "Next chapter", Modifier.size(24.dp))
+                    }
                 }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircleAction(
-                        Icons.Rounded.FastForward,
-                        "Forward $forwardSeconds seconds",
-                        { controller.seekForward() },
-                    )
-                    Text(
-                        "${forwardSeconds}s",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontSize = 10.sp,
-                    )
-                }
-                IconButton(
-                    onClick = {
-                        book.chapters.getOrNull(chapterIndex + 1)?.let { seekBook(it.startMs) }
-                    },
-                    enabled =
-                        timeline.hasDurations &&
-                            chapterIndex >= 0 &&
-                            chapterIndex + 1 < book.chapters.size,
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(Icons.Rounded.SkipNext, "Next chapter", Modifier.size(24.dp))
+                    OutlinedButton(
+                        onClick = { showSpeed = true },
+                        contentPadding = PaddingValues(horizontal = 14.dp),
+                        modifier = Modifier.height(44.dp),
+                    ) {
+                        Text("${speed}×", style = MaterialTheme.typography.labelMedium)
+                    }
+                    PlayerTool(
+                        Icons.AutoMirrored.Rounded.FormatListBulleted,
+                        "Chapters",
+                        { showChapters = true },
+                    )
+                    PlayerTool(Icons.Rounded.BookmarkBorder, "Bookmarks", { showBookmarks = true })
+                    PlayerTool(
+                        Icons.Rounded.Bedtime,
+                        if (sleepAtChapterEnd) "Chapter end"
+                        else if (sleep > 0) "$sleep min" else "Sleep timer",
+                        { showTimer = true },
+                        active = sleepAtChapterEnd || sleep > 0,
+                    )
                 }
-            }
-            Row(
-                Modifier.fillMaxWidth().padding(top = 8.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                OutlinedButton(
-                    onClick = { showSpeed = true },
-                    contentPadding = PaddingValues(horizontal = 14.dp),
-                    modifier = Modifier.height(44.dp),
-                ) {
-                    Text("${speed}×", style = MaterialTheme.typography.labelMedium)
-                }
-                PlayerTool(
-                    Icons.AutoMirrored.Rounded.FormatListBulleted,
-                    "Chapters",
-                    { showChapters = true },
-                )
-                PlayerTool(Icons.Rounded.BookmarkBorder, "Bookmarks", { showBookmarks = true })
-                PlayerTool(
-                    Icons.Rounded.Bedtime,
-                    if (sleepAtChapterEnd) "Chapter end"
-                    else if (sleep > 0) "$sleep min" else "Sleep timer",
-                    { showTimer = true },
-                    active = sleepAtChapterEnd || sleep > 0,
-                )
             }
             listening.error?.let {
                 Text(
@@ -353,6 +408,10 @@ fun PlayerSheet(
                 )
             }
         }
+        SnackbarHost(
+            seekNotice,
+            Modifier.align(Alignment.BottomCenter).safeDrawingPadding().padding(horizontal = 16.dp),
+        )
     }
     if (showSpeed)
         AlertDialog(
@@ -404,9 +463,7 @@ fun PlayerSheet(
                 draft = BookmarkDraft(index, at, "Part ${index + 1} · ${duration(at)}")
             },
             onSeek = { bookmark ->
-                bookmark.target(book)?.let { index ->
-                    controller.seekTo(index, bookmark.positionMs)
-                }
+                bookmark.target(book)?.let { index -> seek(AudioSeek(index, bookmark.positionMs)) }
                 showBookmarks = false
             },
             onRename = { bookmark ->
@@ -464,62 +521,97 @@ fun PlayerSheet(
             },
             confirmButton = { TextButton(onClick = { showTimer = false }) { Text("Close") } },
         )
-    if (showChapters)
+    if (showChapters) {
+        var query by remember(book) { mutableStateOf("") }
+        val currentChapterId = book.chapters.getOrNull(timeline.chapterIndex(elapsed))?.id
+        val chapters =
+            remember(book, query) {
+                book.chapters.filter { it.title.contains(query.trim(), ignoreCase = true) }
+            }
         AlertDialog(
             onDismissRequest = { showChapters = false },
             title = { Text("Chapters") },
             text = {
-                val currentChapterIndex = timeline.chapterIndex(elapsed)
-                val currentChapterId = book.chapters.getOrNull(currentChapterIndex)?.id
-                val chapterList =
-                    rememberLazyListState(
-                        initialFirstVisibleItemIndex = currentChapterIndex.coerceAtLeast(0)
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        query,
+                        { query = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Search chapters") },
+                        singleLine = true,
                     )
-                LazyColumn(Modifier.fillMaxWidth(), state = chapterList) {
-                    items(book.chapters, key = { it.id }) { chapter ->
-                        val current = chapter.id == currentChapterId
-                        TextButton(
-                            modifier =
-                                Modifier.fillMaxWidth().heightIn(min = 56.dp).semantics {
-                                    selected = current
-                                },
-                            shape = MaterialTheme.shapes.medium,
-                            colors =
-                                ButtonDefaults.textButtonColors(
-                                    containerColor =
-                                        if (current) MaterialTheme.colorScheme.secondaryContainer
-                                        else Color.Transparent,
-                                    contentColor =
-                                        if (current) MaterialTheme.colorScheme.onSecondaryContainer
-                                        else MaterialTheme.colorScheme.primary,
-                                ),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                            onClick = {
-                                val index =
-                                    book.assets.indexOfFirst { it.assetId == chapter.assetId }
-                                if (index >= 0) controller.seekTo(index, chapter.assetOffsetMs)
-                                showChapters = false
-                            },
-                        ) {
-                            Text(
-                                "${chapter.title} · ${duration(chapter.startMs)}",
-                                modifier = Modifier.weight(1f),
-                                fontWeight =
-                                    if (current) FontWeight.SemiBold else FontWeight.Normal,
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Start,
-                            )
-                            if (current)
-                                Icon(
-                                    Icons.Rounded.PlayArrow,
-                                    "Current chapter",
-                                    Modifier.padding(start = 8.dp).size(20.dp),
-                                )
+                    if (chapters.isEmpty()) {
+                        Text(
+                            if (book.chapters.isEmpty()) "No chapters in this audiobook."
+                            else "No matching chapters."
+                        )
+                    } else
+                        key(query) {
+                            val initial =
+                                if (query.isBlank())
+                                    chapters
+                                        .indexOfFirst { it.id == currentChapterId }
+                                        .coerceAtLeast(0)
+                                else 0
+                            LazyColumn(
+                                Modifier.fillMaxWidth().heightIn(max = 420.dp),
+                                state =
+                                    rememberLazyListState(initialFirstVisibleItemIndex = initial),
+                            ) {
+                                items(chapters, key = { it.id }) { chapter ->
+                                    val current = chapter.id == currentChapterId
+                                    TextButton(
+                                        modifier =
+                                            Modifier.fillMaxWidth()
+                                                .heightIn(min = 56.dp)
+                                                .semantics { selected = current },
+                                        shape = MaterialTheme.shapes.medium,
+                                        colors =
+                                            ButtonDefaults.textButtonColors(
+                                                containerColor =
+                                                    if (current)
+                                                        MaterialTheme.colorScheme.secondaryContainer
+                                                    else Color.Transparent,
+                                                contentColor =
+                                                    if (current)
+                                                        MaterialTheme.colorScheme
+                                                            .onSecondaryContainer
+                                                    else MaterialTheme.colorScheme.onSurface,
+                                            ),
+                                        contentPadding =
+                                            PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                        onClick = {
+                                            val index =
+                                                book.assets.indexOfFirst {
+                                                    it.assetId == chapter.assetId
+                                                }
+                                            if (index >= 0)
+                                                seek(AudioSeek(index, chapter.assetOffsetMs))
+                                            showChapters = false
+                                        },
+                                    ) {
+                                        Text(
+                                            chapter.title,
+                                            Modifier.weight(1f),
+                                            fontWeight =
+                                                if (current) FontWeight.SemiBold
+                                                else FontWeight.Normal,
+                                        )
+                                        if (chapter.endMs > chapter.startMs)
+                                            Text(
+                                                duration(chapter.endMs - chapter.startMs),
+                                                Modifier.padding(start = 8.dp),
+                                                style = MaterialTheme.typography.labelMedium,
+                                            )
+                                    }
+                                }
+                            }
                         }
-                    }
                 }
             },
             confirmButton = { TextButton(onClick = { showChapters = false }) { Text("Close") } },
         )
+    }
 }
 
 @Composable

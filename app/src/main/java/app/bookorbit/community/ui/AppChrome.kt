@@ -14,37 +14,36 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+enum class OrbitTab(val label: String, val icon: ImageVector) {
+    HOME("Home", Icons.Rounded.Home),
+    LIBRARY("Library", Icons.AutoMirrored.Rounded.LibraryBooks),
+    DOWNLOADS("Downloads", Icons.Rounded.Download),
+    SEARCH("Search", Icons.Rounded.Search),
+    MORE("More", Icons.Rounded.MoreHoriz),
+}
+
 @Composable
-fun OrbitTabBar(selectedTab: Int, onSelect: (Int) -> Unit) {
-    val icons =
-        listOf(
-            Icons.Rounded.Home,
-            Icons.AutoMirrored.Rounded.LibraryBooks,
-            Icons.Rounded.Headphones,
-            Icons.Rounded.AutoStories,
-            Icons.Rounded.DownloadDone,
-        )
-    val labels = listOf("Home", "Library", "Listen", "Read", "Downloads")
-    val tabIds = listOf(0, 4, 1, 2, 3)
+fun OrbitTabBar(selectedTab: OrbitTab, onSelect: (OrbitTab) -> Unit) {
     NavigationBar(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
         tonalElevation = 0.dp,
         windowInsets = WindowInsets(0, 0, 0, 0),
     ) {
-        labels.forEachIndexed { index, label ->
+        OrbitTab.entries.forEach { tab ->
             NavigationBarItem(
-                selected = selectedTab == tabIds[index],
-                onClick = { onSelect(tabIds[index]) },
-                icon = { Icon(icons[index], null, Modifier.size(22.dp)) },
+                selected = selectedTab == tab,
+                onClick = { onSelect(tab) },
+                icon = { Icon(tab.icon, null, Modifier.size(22.dp)) },
                 label = {
                     Text(
-                        label,
+                        tab.label,
                         maxLines = 1,
                         softWrap = false,
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
@@ -53,7 +52,7 @@ fun OrbitTabBar(selectedTab: Int, onSelect: (Int) -> Unit) {
                 colors =
                     NavigationBarItemDefaults.colors(
                         selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                        selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                        selectedTextColor = MaterialTheme.colorScheme.primary,
                         indicatorColor = MaterialTheme.colorScheme.primaryContainer,
                         unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                         unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
